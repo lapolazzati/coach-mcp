@@ -29,8 +29,9 @@ def test_migrate_is_idempotent_and_records_versions(tmp_path):
 def test_migrate_adopts_db_built_without_runner(tmp_path):
     path = tmp_path / "old.sqlite"
     conn = sqlite3.connect(path)
-    for _, p in migrations():
-        conn.executescript(p.read_text())
+    for v, p in migrations():
+        if v <= 3:  # pre-runner DBs only ever had 001-003; 004+ are runner-only
+            conn.executescript(p.read_text())
     conn.execute("INSERT INTO weight (date, kg, source, updated_at) VALUES ('2026-11-01', 82, 'a', 'x')")
     conn.commit()
     assert len(migrate(conn)) == len(migrations())  # recorded, no errors
