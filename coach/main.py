@@ -13,6 +13,9 @@ from fastapi.responses import JSONResponse
 
 from coach.config import get_settings
 from coach.db import migrate as db_migrate
+from coach.integrations.intervals import IntervalsClient
+from coach.jobs.scheduler import build_scheduler
+from coach.store import db as store_db
 from coach.web.app import create_app
 
 
@@ -26,7 +29,16 @@ def build_app() -> FastAPI:
             db_migrate.migrate(conn)
         finally:
             conn.close()
-        yield
+        scheduler = None
+        if settings.coach_scheduler_enabled:
+            scheduler = build_scheduler(settings, lambda: store_db.connect_write(settings.coach_db_path),
+                                        lambda: IntervalsClient.from_settings(settings))
+            scheduler.start()
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                scheduler.shutdown(wait=False)
 
     app = create_app(settings.coach_db_path)
     app.router.lifespan_context = lifespan
