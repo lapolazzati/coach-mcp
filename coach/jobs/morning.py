@@ -108,12 +108,14 @@ def ease_reason(score: readiness.Readiness, row: Row) -> str:
 
 
 def _candidates(conn: sqlite3.Connection, day: date) -> list[Row]:
-    rows = fetch_all(
+    kinds = sorted(HARD_KINDS)
+    return fetch_all(
         conn,
-        "SELECT * FROM planned_session WHERE date = ? AND status = 'planned' ORDER BY coalesce(start_time, slot)",
-        (day.isoformat(),),
+        "SELECT * FROM planned_session WHERE date = ? AND status = 'planned'"
+        f" AND lower(coalesce(kind, '')) IN ({', '.join('?' * len(kinds))})"
+        " AND coalesce(eased_from_json, '') = '' ORDER BY coalesce(start_time, slot)",
+        (day.isoformat(), *kinds),
     )
-    return [r for r in rows if str(r.get("kind") or "").lower() in HARD_KINDS and not r.get("eased_from_json")]
 
 
 def run(conn: sqlite3.Connection, client: Any, now: datetime, *, dry_run: bool = False) -> dict[str, Any]:

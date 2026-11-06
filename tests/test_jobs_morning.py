@@ -101,6 +101,14 @@ def test_already_eased_session_is_skipped(red: sqlite3.Connection) -> None:
     assert session(red, ext)["kind"] == "vo2"  # type: ignore[index]
 
 
+def test_non_hard_kind_is_left_alone(red: sqlite3.Connection) -> None:
+    ext = add_session(red, DAY, "pm", kind="Endurance")
+    hard = add_session(red, DAY, "am", kind="VO2")
+    out = morning.run(red, None, at(6))
+    assert out["eased"] == [hard]
+    assert session(red, ext)["kind"] == "Endurance"  # type: ignore[index]
+
+
 def test_user_locked_gets_advice_once(red: sqlite3.Connection) -> None:
     ext = add_session(red, DAY, "pm", kind="threshold", user_locked=1)
     out = morning.run(red, None, at(6))
