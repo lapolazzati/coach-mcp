@@ -394,7 +394,7 @@ class FitRide:
 
 
 def _fit_reader(data: bytes):
-    import fitdecode
+    import fitdecode  # type: ignore[import-untyped]
 
     return fitdecode.FitReader(io.BytesIO(data), check_crc=fitdecode.CrcCheck.DISABLED)
 
@@ -521,6 +521,8 @@ def import_streams(conn: sqlite3.Connection, export: Path, since: datetime, stat
     for activity_id, (_, zpath, member) in best.items():
         with zipfile.ZipFile(zpath) as zf:
             ride = parse_fit_ride(zf.read(member))
+        if ride is None:
+            continue
         conn.executemany(
             "INSERT OR REPLACE INTO activity_stream "
             "(activity_id, t, power, hr, cadence, speed_mps, distance_m, altitude_m, lat, lon) "

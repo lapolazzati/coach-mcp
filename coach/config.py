@@ -30,11 +30,15 @@ class Settings(BaseSettings):
     garmin_personal_api_key: SecretStr | None = None
     garmin_personal_api_key_expires: date | None = None
 
-    anthropic_api_key: SecretStr | None = None
-    anthropic_monthly_budget_usd: float = 100.0
-
-    telegram_bot_token: SecretStr | None = None
-    telegram_chat_id: int | None = None
+    # Remote MCP server for the Claude app (coach-mcp service). All optional so the
+    # dashboard boots without them; coach-mcp itself refuses to start if unset.
+    coach_mcp_public_url: str | None = None
+    coach_mcp_allowed_github_id: int | None = None
+    coach_mcp_github_client_id: str | None = None
+    coach_mcp_github_client_secret: SecretStr | None = None
+    coach_mcp_jwt_key: SecretStr | None = None
+    coach_mcp_storage_key: SecretStr | None = None
+    coach_mcp_bind_port: int = 9091
 
     google_sa_json: SecretStr | None = None      # service-account JSON (inline) for DWD
     google_subject: str = "l@ethon.io"
@@ -43,8 +47,10 @@ class Settings(BaseSettings):
     coach_home_address: str | None = None
 
     @field_validator("intervals_api_key", "garmin_personal_api_key", "intervals_athlete_id",
-                     "garmin_personal_api_key_expires", "anthropic_api_key", "telegram_bot_token",
-                     "telegram_chat_id", "google_sa_json", "google_maps_api_key", "coach_home_address",
+                     "garmin_personal_api_key_expires", "coach_mcp_public_url",
+                     "coach_mcp_allowed_github_id", "coach_mcp_github_client_id",
+                     "coach_mcp_github_client_secret", "coach_mcp_jwt_key",
+                     "coach_mcp_storage_key", "google_sa_json", "google_maps_api_key", "coach_home_address",
                      mode="before")
     @classmethod
     def _blank_is_none(cls, v):

@@ -1,9 +1,11 @@
+import pathlib
 import sqlite3
 from datetime import datetime
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from coach.config import get_settings
 from coach.db.migrate import connect, current_version, migrate, migrations
@@ -65,6 +67,52 @@ def test_blank_env_values_are_unset(app_env, monkeypatch):
     monkeypatch.setenv("INTERVALS_API_KEY", "")
     get_settings.cache_clear()
     assert get_settings().intervals_api_key is None
+
+
+MCP_VARS = ("COACH_MCP_PUBLIC_URL", "COACH_MCP_ALLOWED_GITHUB_ID", "COACH_MCP_GITHUB_CLIENT_ID",
+            "COACH_MCP_GITHUB_CLIENT_SECRET", "COACH_MCP_JWT_KEY", "COACH_MCP_STORAGE_KEY")
+
+
+def test_healthz_ok_without_mcp_settings(app_env, monkeypatch):
+    for k in MCP_VARS:
+        monkeypatch.delenv(k, raising=False)
+    get_settings.cache_clear()
+    from coach.main import build_app
+    with TestClient(build_app()) as client:
+        assert client.get("/healthz").status_code == 200
+    s = get_settings()
+    assert s.coach_mcp_public_url is None and s.coach_mcp_allowed_github_id is None
+    assert s.coach_mcp_bind_port == 9091
+
+
+def test_mcp_settings_parse(app_env, monkeypatch):
+    values = dict(zip(MCP_VARS, ("https://coach-mcp.example.com", "12345", "cid", "csecret",
+                                 "jwt-key", "storage-key"), strict=True))
+    for k, v in values.items():
+        monkeypatch.setenv(k, v)
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.coach_mcp_allowed_github_id == 12345
+    assert s.coach_mcp_public_url == "https://coach-mcp.example.com"
+    assert s.coach_mcp_github_client_secret is not None
+    assert s.coach_mcp_github_client_secret.get_secret_value() == "csecret"
+
+
+def test_mcp_github_id_must_be_numeric(app_env, monkeypatch):
+    monkeypatch.setenv("COACH_MCP_ALLOWED_GITHUB_ID", "lapo")
+    get_settings.cache_clear()
+    with pytest.raises(ValidationError):
+        get_settings()
+
+
+def test_package_data_has_no_llm_prompts():
+    import tomllib
+    data = tomllib.loads(pathlib.Path(__file__).parents[1].joinpath("pyproject.toml").read_text())
+    globs = data["tool"]["setuptools"]["package-data"]["coach"]
+    assert "db/migrations/*.sql" in globs
+    assert not any("llm" in g for g in globs)
+    deps = " ".join(data["project"]["dependencies"])
+    assert "fastmcp" in deps and "anthropic" not in deps and "telegram" not in deps
 
 
 # --- workout builder -------------------------------------------------------

@@ -38,7 +38,7 @@ def open_db(db_path: Path) -> sqlite3.Connection:
 
 
 def create_app(db_path: Path | str | None = None) -> FastAPI:
-    db_path = Path(db_path or os.environ.get("COACH_DB", DEFAULT_DB))
+    db_path = Path(db_path or os.environ.get("COACH_DB") or DEFAULT_DB)
     template = build_env().get_template("dashboard.html")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

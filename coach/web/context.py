@@ -104,7 +104,7 @@ def _week(db: sqlite3.Connection, monday: date, today: date) -> list[dict]:
     for i in range(7):
         d = monday + timedelta(days=i)
         acts = by_day.get(d.isoformat(), [])
-        row = {"dow": f"{d:%a}", "date": str(d.day)}
+        row: dict[str, object] = {"dow": f"{d:%a}", "date": str(d.day)}
         if acts:
             group = acts[0][0]
             row.update(

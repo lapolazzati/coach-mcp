@@ -16,7 +16,7 @@ One user: Lapo. Busy parent of a young child, sleeps badly some nights, rides ~2
 
 ## Product Purpose
 
-A lifelong n=1 AI cycling coach. It reads sleep/recovery (Garmin via intervals.icu), calendar (Google Workspace), travel and training history, decides what to train, when and how hard, and places the workout in intervals.icu → Zwift/Garmin. Telegram is the conversational channel; the dashboard is the place to see the plan and progress.
+A lifelong n=1 AI cycling coach. It reads sleep/recovery (Garmin via intervals.icu), calendar (Google Workspace), travel and training history, decides what to train, when and how hard, and places the workout in intervals.icu → Zwift/Garmin. The Claude app on the phone is the only conversational channel, talking to the coach through a public, OAuth-protected MCP endpoint (coach-mcp); the dashboard stays private on Tailscale and is the place to see the plan and progress. Reminders come from Claude scheduled chats, not from the coach.
 
 First goal: Strade Bianche Gran Fondo short route (87 km, 1,350 m, 6 gravel sectors), Sunday 7 March 2027, Siena, finish under 3h30. Supporting goal: 82 → 74 kg at 0.5–0.7 kg/week.
 
@@ -29,7 +29,7 @@ Specificity to one person: every number and choice comes from Lapo's own data, c
 ## Operating Context
 
 - Phone over Tailscale, often half-awake, early morning; occasionally desktop.
-- Coach acts autonomously; dashboard is read-mostly. Actions (A/B choices, gym done, undo) happen in Telegram.
+- Coach acts autonomously; dashboard is read-mostly. Actions (logging, moving or swapping sessions, undo) happen in the Claude app over MCP.
 - Training calendar Jan–Feb is travel-heavy: runs substitute for rides.
 
 ## Capabilities and Constraints
