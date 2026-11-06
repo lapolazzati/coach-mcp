@@ -22,7 +22,15 @@ from typing import Any
 
 from coach.store import audit, sync
 from coach.store.audit import UndoResult
-from coach.store.db import Row, fetch_one, now_utc, parse_date, today_local, transaction
+from coach.store.db import (
+    Row,
+    fetch_all,
+    fetch_one,
+    now_utc,
+    parse_date,
+    today_local,
+    transaction,
+)
 
 FREE_SLOT_LOOKAHEAD_DAYS = 3
 EASE_FIELDS = ("session_json", "kind", "name", "duration_min", "sport")
@@ -221,3 +229,107 @@ def ease_session(
 def undo(conn: sqlite3.Connection, audit_id: int, *, actor: str = "claude") -> UndoResult:
     """Undo any audited write (plan ops and logs alike)."""
     return audit.undo(conn, audit_id, actor=actor)
+
+
+# --- monthly plan (U5, KTD11) ---------------------------------------------------
+
+MONTH_KEPT_STATUSES = ("done",)
+MONTH_PLAN_FIELDS = ("date", "slot", "start_time", "sport", "kind", "name", "duration_min", "session_json")
+
+
+@dataclass
+class MonthSaveResult:
+    status: str  # ok | refused
+    message: str = ""
+    plan_version: int = 0
+    replaced: int = 0
+    rows: list[Row] = field(default_factory=list)
+    audit_id: int | None = None
+
+
+def save_month(
+    conn: sqlite3.Connection,
+    month: str,
+    rationale: str,
+    sessions: list[dict[str, Any]],
+    *,
+    actor: str = "claude",
+    today: date | None = None,
+) -> MonthSaveResult:
+    """Replace a month's future, unlocked, not-done sessions with `sessions` in one transaction.
+
+    `sessions` are validated rows (MONTH_PLAN_FIELDS). Kept: user_locked, done,
+    and anything before today; a new session on a kept slot is refused. A slot
+    that keeps its external_id is updated in place; a dropped one is deleted
+    with a tombstone so the push removes its event. One audit row lists every
+    before/after pair, so undo() restores the previous month.
+    """
+    audit.check_actor(actor)
+    first = parse_date(f"{month}-01")
+    nxt = date(first.year + first.month // 12, first.month % 12 + 1, 1)
+    start = max(first, today or today_local())
+    with transaction(conn):
+        existing = [r for r in _rows_between(conn, start, nxt)]
+        kept = {(r["date"], r["slot"]): r for r in existing
+                if r["user_locked"] or r["status"] in MONTH_KEPT_STATUSES}
+        for s in sessions:
+            holder = kept.get((s["date"], s["slot"]))
+            if holder is not None:
+                why = "locked by Lapo" if holder["user_locked"] else f"already {holder['status']}"
+                return MonthSaveResult("refused", f"{s['date']} {s['slot']} is {why} ({holder['name']})")
+        replaceable = {r["external_id"]: r for r in existing if (r["date"], r["slot"]) not in kept}
+        plan = fetch_one(conn, "SELECT plan_version FROM month_plan WHERE month = ?", (month,))
+        version = (int(plan["plan_version"]) if plan else 0) + 1
+        now = now_utc()
+        conn.execute(
+            "INSERT INTO month_plan (month, rationale, plan_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT (month) DO UPDATE SET rationale = excluded.rationale,"
+            " plan_version = excluded.plan_version, updated_at = excluded.updated_at",
+            (month, rationale, version, now, now),
+        )
+        before: list[Row | None] = []
+        after: list[Row | None] = []
+        written: set[str] = set()
+        for s in sessions:
+            ext = sync.external_id(s["date"], s["slot"])
+            values = {k: s.get(k) for k in MONTH_PLAN_FIELDS}
+            values.update(plan_version=version, status="planned")
+            old = replaceable.get(ext)
+            if old is not None:
+                values.update(ease_reason=None, eased_from_json=None, eased_at=None, pinned_date=0)
+                cols, params = sync.as_params(values)
+                conn.execute(f"UPDATE planned_session SET {cols} WHERE id = ?", (*params, int(old["id"])))
+                sid = int(old["id"])
+            else:
+                sync.claim_external_id(conn, ext)
+                values.update(external_id=ext, updated_at=now)
+                cur = conn.execute(
+                    f"INSERT INTO planned_session ({', '.join(values)}) VALUES ({', '.join('?' for _ in values)})",
+                    tuple(values.values()),
+                )
+                sid = int(cur.lastrowid or 0)
+            sync.mark_dirty(conn, sid)
+            before.append(old)
+            after.append(_reload(conn, sid))
+            written.add(ext)
+        for ext, old in replaceable.items():
+            if ext in written:
+                continue
+            sync.add_tombstone(conn, ext, int(old["id"]), "replaced by month plan")
+            conn.execute("DELETE FROM planned_session WHERE id = ?", (int(old["id"]),))
+            before.append(old)
+            after.append(None)
+        aid = None
+        if before:
+            ids = ",".join(str(int((a or b)["id"])) for b, a in zip(before, after, strict=True))  # type: ignore[index]
+            aid = audit.record(conn, actor=actor, action="save_month_plan", entity="planned_session",
+                               entity_id=ids, before=before, after=after,
+                               reason=f"{month} plan v{version}: {rationale}")
+    rows = [a for a in after if a is not None]
+    return MonthSaveResult("ok", f"saved {len(rows)} sessions for {month} (v{version})", version,
+                           len(replaceable), rows, aid)
+
+
+def _rows_between(conn: sqlite3.Connection, start: date, end: date) -> list[Row]:
+    return fetch_all(conn, "SELECT * FROM planned_session WHERE date >= ? AND date < ? ORDER BY date, slot",
+                     (start.isoformat(), end.isoformat()))
