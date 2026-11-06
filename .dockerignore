@@ -1,0 +1,12 @@
+.venv
+.env
+data
+docs
+tests
+scripts
+.impeccable
+.claude
+*.egg-info
+**/__pycache__
+.pytest_cache
+.ruff_cache

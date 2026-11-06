@@ -1,0 +1,292 @@
+{#- Coach dashboard. Context contract: see coach/web/sample_context.py. -#}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#24211B">
+  <title>Coach · {{ today.label }}</title>
+  <link rel="preload" href="{{ static_url }}/fonts/barlow-condensed-800.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="{{ static_url }}/dashboard.css">
+</head>
+<body>
+<svg class="defs" aria-hidden="true" focusable="false">
+  <symbol id="i-star" viewBox="0 0 16 16"><path d="M8 1.2l2 4.3 4.7.5-3.5 3.2 1 4.6L8 11.4l-4.2 2.4 1-4.6L1.3 6l4.7-.5z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-moved" viewBox="0 0 16 16"><path d="M2 8h10M9 4.5L12.5 8 9 11.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-missed" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-fuel" viewBox="0 0 16 16"><path d="M8 1.5C8 1.5 3.5 7 3.5 10a4.5 4.5 0 009 0C12.5 7 8 1.5 8 1.5z"/></symbol>
+</svg>
+
+<header class="topline">
+  <p class="topline__date"><time>{{ today.label }}</time> <span class="sep">·</span> Settore {{ today.week }} of {{ today.weeks_total }}</p>
+  {% if sample %}<p class="badge" role="note">Sample data</p>{% endif %}
+</header>
+
+<main class="page">
+
+  {# ── 1. Today ─────────────────────────────────────────────── #}
+  <section class="plate" aria-labelledby="today-title">
+    {% if session %}
+    <h1 id="today-title" class="plate__title"><span class="plate__name">{{ session.title }}<span class="plate__sub">{{ session.subtitle }}</span></span><span class="plate__slot num">{{ session.slot }}</span></h1>
+    <p class="plate__load"><span class="num">TSS {{ session.tss }}</span><span class="sep">·</span>Load
+      <span class="stars" role="img" aria-label="{{ session.rating }} of 5">
+        {%- for i in range(5) %}<svg class="star{{ ' is-on' if i < session.rating }}"><use href="#i-star"/></svg>{% endfor -%}
+      </span>
+    </p>
+    <p class="plate__detail">{{ session.detail }}</p>
+    <p class="plate__why">{{ session.why }}</p>
+    {% if session.in_zwift %}<p class="plate__ready"><svg class="ico"><use href="#i-check"/></svg>Waiting in Zwift</p>{% endif %}
+    {% else %}
+    <h1 id="today-title" class="plate__title"><span class="plate__name">Rest day<span class="plate__sub">Nothing scheduled</span></span></h1>
+    <p class="plate__why">The coach left today open. Recovery counts as training.</p>
+    {% endif %}
+    {% if not readiness.available %}
+    <p class="plate__note">Readiness starts after {{ readiness.days_needed }} days of sleep and HRV data. {{ readiness.days_collected }} of {{ readiness.days_needed }} so far.</p>
+    {% endif %}
+  </section>
+
+  {# ── 2. Goal ──────────────────────────────────────────────── #}
+  <section class="goal" aria-labelledby="goal-title">
+    <div class="goal__head">
+      <h2 id="goal-title" class="h2">{{ goal.place }} <span class="muted">· {{ goal.days_to_go }} days</span></h2>
+      <p class="goal__sub">{{ goal.name }}, {{ goal.route|lower }} · {{ goal.date }} · <span class="num">{{ goal.distance_km }} km · {{ "{:,}".format(goal.climb_m) }} m · {{ goal.sectors }} sectors</span></p>
+    </div>
+
+    <div class="projection">
+      {% if goal.projected %}
+      <p class="projection__value num">{{ goal.projected }}</p>
+      <div class="projection__text">
+        <p>Projected finish</p>
+        {% set b = goal.targets | selectattr("tier", "equalto", "B") | first %}
+        {% set b_min = to_min(b.time) %}
+        {% if goal.gap_min > 0 %}
+        <p class="gap gap--behind num">+{{ goal.gap_min }}′ vs {{ b.time }}</p>
+        {% else %}
+        <p class="gap num">{{ goal.gap_min }}′ vs {{ b.time }}</p>
+        {% endif %}
+      </div>
+      {% if goal.projected_history|length > 1 %}
+      {% set ph = goal.projected_history %}
+      {# Faster is up: the domain runs slow (bottom) to fast (top) and always includes target B. #}
+      {% set slow = [ph|max, b_min]|max + 2 %}
+      {% set fast = [ph|min, b_min]|min - 2 %}
+      <figure class="trend">
+        <svg viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true">
+          {% set ref_y = scale(slow, fast, 34, 2)(b_min) %}
+          <line class="trend__ref" x1="0" x2="120" y1="{{ ref_y }}" y2="{{ ref_y }}"/>
+          <path class="trend__line" d="{{ line_path(ph, 120, 36, slow, fast) }}"/>
+        </svg>
+        <figcaption>{{ ph|length }} weeks: {{ fmt_hm(ph[0]) }} → {{ fmt_hm(ph[-1]) }}</figcaption>
+      </figure>
+      {% endif %}
+      {% else %}
+      <p class="projection__value projection__value--empty">Not yet</p>
+      <div class="projection__text">
+        <p>Projected finish</p>
+        <p class="muted">Needs two weeks of rides with power.</p>
+      </div>
+      {% endif %}
+    </div>
+
+    <ol class="targets">
+      {% for t in goal.targets %}
+      <li class="target{{ ' target--goal' if t.tier == 'B' }}"><span class="target__tier">{{ t.tier }}</span><span class="num">{{ t.time }}</span><span class="target__label">{{ t.label }}</span></li>
+      {% endfor %}
+    </ol>
+  </section>
+
+  {# ── 3. This week ─────────────────────────────────────────── #}
+  <section class="week" aria-labelledby="week-title">
+    <h2 id="week-title" class="h2">This week</h2>
+    <ol class="rows">
+      {% for d in week %}
+      <li class="row row--{{ d.status }}{{ ' row--today' if d.get('today') }}">
+        <span class="row__day"><b>{{ d.dow }}</b> <span class="num">{{ d.date }}</span></span>
+        <span class="row__what">
+          {% if d.status == 'moved' %}<svg class="ico"><use href="#i-moved"/></svg><s class="row__was">{{ d.title }}</s><span class="row__note">{{ d.get('note', '') }}</span>
+          {% else %}{{ d.title }}{% if d.get('today') %}<span class="row__note">Today</span>{% endif %}{% endif %}
+        </span>
+        <span class="row__end">
+          {% if d.status == 'done' %}<svg class="ico ico--done" role="img" aria-label="Done"><use href="#i-check"/></svg>
+          {% elif d.status == 'missed' %}<svg class="ico ico--missed" role="img" aria-label="Missed"><use href="#i-missed"/></svg>
+          {% else %}<span class="num">{{ d.slot }}</span>{% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+
+  {# ── 4. Trends ────────────────────────────────────────────── #}
+  <section class="trends" aria-labelledby="trends-title">
+    <h2 id="trends-title" class="h2">Trends</h2>
+
+    <article class="panel">
+      <h3 class="h3">Fitness and fatigue</h3>
+      {% if fitness %}
+      {% set f = fitness %}
+      <dl class="figures">
+        <div><dt>Fitness</dt><dd class="num">{{ f.ctl_now }}</dd></div>
+        <div><dt>Fatigue</dt><dd class="num">{{ f.atl_now }}</dd></div>
+        <div><dt>Form</dt><dd class="num">{{ '%+d'|format(f.tsb_now) }}</dd></div>
+      </dl>
+      {% set lo = (f.atl + f.ctl)|min - 3 %}
+      {% set hi = [(f.atl + f.ctl)|max, f.ctl_race_target]|max + 3 %}
+      <svg class="chart" viewBox="0 0 300 90" preserveAspectRatio="none" role="img" aria-label="Fitness {{ f.ctl[0] }} to {{ f.ctl[-1] }} over {{ f.ctl|length }} days, race-day target {{ f.ctl_race_target }}">
+        {% set ty = scale(lo, hi, 88, 2)(f.ctl_race_target) %}
+        <line class="chart__target" x1="0" x2="300" y1="{{ ty }}" y2="{{ ty }}"/>
+        <path class="chart__atl" d="{{ line_path(f.atl, 300, 90, lo, hi) }}"/>
+        <path class="chart__ctl" d="{{ line_path(f.ctl, 300, 90, lo, hi) }}"/>
+      </svg>
+      <p class="caption"><i class="key key--ctl"></i>Fitness <i class="key key--atl"></i>Fatigue <i class="key key--target"></i>Race-day target <span class="num">{{ f.ctl_race_target }}</span> · last {{ f.ctl|length }} days</p>
+      {% else %}
+      <p class="empty">Fitness and fatigue build from intervals.icu once the first rides sync.</p>
+      {% endif %}
+    </article>
+
+    <article class="panel">
+      <h3 class="h3">Weight</h3>
+      {% set wt = weight %}
+      <dl class="figures">
+        <div><dt>Now</dt><dd class="num">{{ '%.1f'|format(wt.now) }}<small>kg</small></dd></div>
+        <div><dt>Target</dt><dd class="num">{{ '%.0f'|format(wt.target) }}<small>kg</small></dd></div>
+        <div><dt>Pace</dt><dd class="num">{% if wt.per_week is not none %}{{ '%.2f'|format(wt.per_week) }}<small>kg/wk</small>{% else %}–{% endif %}</dd></div>
+      </dl>
+      {% if wt.series|length > 1 %}
+      <svg class="chart" viewBox="0 0 300 90" preserveAspectRatio="none" role="img" aria-label="Weight {{ wt.series[0] }} to {{ wt.series[-1] }} kg">
+        <path class="chart__w" d="{{ line_path(wt.series, 300, 90, wt.target - 0.5, wt.start + 0.5) }}"/>
+        {% set ty = scale(wt.target - 0.5, wt.start + 0.5, 88, 2)(wt.target) %}
+        <line class="chart__target" x1="0" x2="300" y1="{{ ty }}" y2="{{ ty }}"/>
+      </svg>
+      <p class="caption">{{ wt.series|length }} weigh-ins · <span class="num">{{ '%.1f'|format(wt.now - wt.target) }}</span> kg to go · axis ends at target</p>
+      {% else %}
+      <p class="empty">One weigh-in so far. The trend appears after the second.</p>
+      {% endif %}
+    </article>
+
+    <article class="panel">
+      <h3 class="h3">Weekly volume</h3>
+      {% if volume %}
+      {# planned is None until the planner writes sessions; the bar then shows done only. #}
+      {% set has_plan = volume | map(attribute='planned') | reject('none') | list | length > 0 %}
+      {% set vmax = [volume | map(attribute='done') | max, volume | map(attribute='planned') | reject('none') | max | default(0), 0.1] | max %}
+      <ol class="bars" aria-label="Hours ridden per week, planned versus done">
+        {% for v in volume %}
+        <li class="bar{{ ' bar--current' if loop.last }}">
+          <span class="bar__track" style="--plan: {{ ((v.planned if v.planned is not none else v.done) / vmax * 100)|round(1) }}%; --done: {{ (v.done / vmax * 100)|round(1) }}%">
+            <span class="bar__done"></span>
+          </span>
+          <span class="bar__val num">{{ '%.1f'|format(v.done) }}</span>
+          <span class="bar__label">{{ v.label }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+      <p class="caption"><i class="key key--done"></i>Done {% if has_plan %}<i class="key key--plan"></i>Planned {% endif %}· hours · current week in progress</p>
+      {% else %}
+      <p class="empty">Weekly hours appear after the first full week.</p>
+      {% endif %}
+    </article>
+
+    <article class="panel">
+      <h3 class="h3">Adherence</h3>
+      {% if adherence %}
+      {% set a = adherence %}
+      <dl class="figures">
+        <div><dt>Sessions</dt><dd class="num">{{ a.done }}<small>of {{ a.planned }}</small></dd></div>
+        <div><dt>Rate</dt><dd class="num">{{ (a.done / a.planned * 100)|round|int }}<small>%</small></dd></div>
+      </dl>
+      {# One square per day, one column per week, Monday on top. #}
+      <div class="cal">
+        <ol class="cal__dow" aria-hidden="true"><li>Mon</li><li></li><li>Wed</li><li></li><li>Fri</li><li></li><li>Sun</li></ol>
+        <ol class="cal__grid" aria-label="Daily sessions over the last {{ a.days|length }} weeks: {{ a.done }} of {{ a.planned }} done">
+          {% for wk in a.days %}{% for s in wk %}<li class="cal__d cal__d--{{ s }}" title="{{ s|capitalize }}"></li>{% endfor %}{% endfor %}
+        </ol>
+      </div>
+      <p class="caption"><i class="key cal__d--done"></i>Done <i class="key cal__d--moved"></i>Moved <i class="key cal__d--missed"></i>Missed <i class="key cal__d--rest"></i>Rest · last {{ a.days|length }} weeks · moved counts as done</p>
+      {% else %}
+      <p class="empty">Adherence starts counting after the first planned week.</p>
+      {% endif %}
+    </article>
+
+    <article class="panel panel--wide">
+      <h3 class="h3">Power</h3>
+      {% if power %}
+      {% set p = power %}
+      <dl class="figures">
+        <div><dt>FTP</dt><dd class="num">{{ p.ftp }}<small>W</small></dd></div>
+        <div><dt>W/kg</dt><dd class="num">{{ '%.2f'|format(p.wkg) }}</dd></div>
+      </dl>
+      <table class="table">
+        <thead><tr><th scope="col">Best</th><th scope="col">Last 6 wks</th><th scope="col">6 wks before</th><th scope="col">Change</th></tr></thead>
+        <tbody>
+          {% for r in p.curve %}
+          <tr><th scope="row">{{ r.dur }}</th><td class="num">{{ r.now }} W</td><td class="num muted">{{ r.prev }} W</td><td class="num {{ 'up' if r.now > r.prev else 'down' }}">{{ '%+d'|format(r.now - r.prev) }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="empty">Power curve appears once rides with a power meter or Zwift sync.</p>
+      {% endif %}
+    </article>
+  </section>
+
+  {# ── 5. Recent rides ──────────────────────────────────────── #}
+  <section class="rides" aria-labelledby="rides-title">
+    <h2 id="rides-title" class="h2">Recent rides</h2>
+    {% if rides %}
+    <ol class="ride-list">
+      {% for r in rides %}
+      <li class="ride">
+        <div class="ride__head">
+          <h3 class="h3">{{ r.title }}</h3>
+          <p class="ride__meta"><time>{{ r.date }}</time> · <span class="num">{{ '%.1f'|format(r.km) }} km · {{ r.time }}{% if r.np is not none %} · NP {{ r.np }} W{% endif %}</span></p>
+        </div>
+        {% if r.segments %}
+        <table class="table table--seg">
+          <thead><tr><th scope="col">Segment</th><th scope="col">Today</th><th scope="col">Best before</th><th scope="col">Change</th></tr></thead>
+          <tbody>
+            {% for s in r.segments %}
+            <tr><th scope="row">{{ s.name }}</th><td class="num">{{ s.time }}</td><td class="num muted">{{ s.prev }}</td><td class="num {{ 'up' if s.delta < 0 else 'down' }}">{{ '%+d'|format(s.delta) }}s</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="empty">No rides synced yet. They arrive from intervals.icu after each session.</p>
+    {% endif %}
+  </section>
+
+  {# ── 6. Course ───────────────────────────────────────────── #}
+  <section class="course-sec" aria-labelledby="course-title">
+    <h2 id="course-title" class="h2">The course</h2>
+    {% set c = course %}
+    {% set W = c.km_total * 10 %}
+    {# Labels live in HTML, positioned by km, so they keep their size when the SVG scales. #}
+    <figure class="course">
+      <ol class="course__marks course__marks--sectors" aria-hidden="true">
+        {% for s in c.sectors %}<li style="left: {{ ((s.start + s.end) / 2 / c.km_total * 100)|round(2) }}%">S{{ s.n }}</li>{% endfor %}
+      </ol>
+      <svg class="course__svg" viewBox="0 0 {{ W }} 200" preserveAspectRatio="none" role="img" aria-label="Course profile, {{ c.km_total }} km with {{ c.sectors|length }} gravel sectors and {{ c.fuel|length }} fuelling points">
+        {% for s in c.sectors %}
+        <rect class="course__sector" x="{{ s.start * 10 }}" y="0" width="{{ (s.end - s.start) * 10 }}" height="200"/>
+        {% endfor %}
+        <path class="course__area" d="{{ area_path(c.profile, W, 200, 150, 360) }}"/>
+        <path class="course__line" pathLength="1" d="{{ line_path(c.profile, W, 200, 150, 360, 0) }}"/>
+      </svg>
+      <ol class="course__marks course__marks--fuel" aria-hidden="true">
+        {% for f in c.fuel %}<li style="left: {{ (f.km / c.km_total * 100)|round(2) }}%"><svg class="ico ico--fuel"><use href="#i-fuel"/></svg><span class="num">{{ f.km }}</span></li>{% endfor %}
+      </ol>
+      <figcaption class="course__legend">
+        <span><i class="key key--sector"></i>Gravel sector</span>
+        <span><svg class="ico ico--fuel"><use href="#i-fuel"/></svg>{% for f in c.fuel %}<span class="fuel-item"><span class="num">{{ f.km }}</span>&nbsp;km {{ f.what|lower }}{{ "," if not loop.last }}</span>{% endfor %}</span>
+        {% if c.positions_are_placeholders %}<span class="muted">Sector and fuel positions are placeholders.</span>{% endif %}
+      </figcaption>
+    </figure>
+  </section>
+
+</main>
+</body>
+</html>

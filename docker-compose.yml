@@ -1,0 +1,15 @@
+# Runs on catone. Reachable only on the Tailscale IP, never on the public interface.
+# Run with: docker compose --env-file /opt/coach/.env up -d --build
+# (--env-file feeds the ${...} below; env_file only reaches the container.)
+services:
+  coach:
+    build: .
+    image: coach:latest
+    restart: unless-stopped
+    env_file: /opt/coach/.env
+    environment:
+      COACH_DB_PATH: /data/coach.sqlite
+    volumes:
+      - /opt/coach/data:/data
+    ports:
+      - "${COACH_BIND_HOST:?set to the Tailscale IP}:${COACH_BIND_PORT:-8000}:8000"
