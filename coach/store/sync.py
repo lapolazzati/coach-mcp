@@ -150,3 +150,18 @@ def taken_slots(conn: sqlite3.Connection, day: str, exclude_ids: Sequence[int] =
 def as_params(values: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
     """'a = ?, b = ?' plus params, for UPDATE ... SET with trusted column names."""
     return ", ".join(f"{k} = ?" for k in values), tuple(values.values())
+
+
+def get_state(conn: sqlite3.Connection, key: str) -> str | None:
+    """A sync_state value (job idempotency markers such as morning:<date>), or None."""
+    rows = fetch_all(conn, "SELECT value FROM sync_state WHERE key = ?", (key,))
+    return None if not rows else rows[0]["value"]
+
+
+def set_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO sync_state (key, value, updated_at) VALUES (?, ?, ?)"
+            " ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            (key, value, now_utc()),
+        )

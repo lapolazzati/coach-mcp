@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     coach_tz: str = "Europe/Rome"
     coach_bind_host: str = "127.0.0.1"
     coach_bind_port: int = 8000
+    # U7 jobs (morning readiness, sync, weekly, backup); off until the deploy turns it on.
+    coach_scheduler_enabled: bool = False
 
     intervals_api_key: SecretStr | None = None
     intervals_athlete_id: str | None = None
