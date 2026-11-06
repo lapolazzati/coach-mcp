@@ -246,7 +246,7 @@ def register(mcp: FastMCP, db_path: Path | str, *, client_factory: ClientFactory
                 return {"error": f"month plan rejected ({len(exc.problems)} problem(s)); fix and resend",
                         "problems": exc.problems}
             first = f"{month}-01"
-            rows = fetch_all(conn, "SELECT * FROM planned_session WHERE date >= ? AND substr(date, 1, 7) = ?",
+            rows = fetch_all(conn, "SELECT id FROM planned_session WHERE date >= ? AND substr(date, 1, 7) = ?",
                              (max(first, today().isoformat()), month))
             sync = sync_sessions(conn, client_factory, now, [int(r["id"]) for r in rows])
         warnings: list[str] = saved["warnings"]

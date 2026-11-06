@@ -303,7 +303,7 @@ def register(mcp: FastMCP, db_path: Path | str, *, today: Today = today_local, n
             return error(f"month must be YYYY-MM, got {month!r}")
         nxt = date(first.year + first.month // 12, first.month % 12 + 1, 1)
         with ro() as conn:
-            plan = fetch_one(conn, "SELECT * FROM month_plan WHERE month = ?", (month,))
+            plan = fetch_one(conn, "SELECT rationale, plan_version FROM month_plan WHERE month = ?", (month,))
             return reply(conn, {"month": month, "rationale": plan["rationale"] if plan else None,
                                 "plan_version": plan["plan_version"] if plan else None,
                                 "sessions": _sessions(conn, first, nxt - timedelta(days=1))})
