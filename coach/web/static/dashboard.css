@@ -120,6 +120,7 @@ ol { padding: 0; list-style: none; }
   .week   { grid-column: 1 / -1; grid-row: 2; }
   .trends { grid-column: 1 / -1; }
   .rides  { grid-column: 1 / -1; }
+  .log    { grid-column: 1 / -1; }
   .course-sec { grid-column: 1 / -1; }
 }
 
@@ -189,6 +190,21 @@ ol { padding: 0; list-style: none; }
   font-size: 14px;
   color: var(--plate-mute);
 }
+/* Auto-ease reason (R17): neutral, on the plate. */
+.plate__eased {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #4A443A;
+  font-size: 15px;
+  color: var(--plate-fg);
+}
+.plate__eased b { font: 600 14px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--plate-mute); }
+.plate__eased .num { color: var(--plate-fg); }
+.readiness { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 14px; font-size: 14px; color: var(--plate-mute); }
+.readiness__status { font: 600 14px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--plate-fg); }
+.readiness__status::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; vertical-align: 1px; background: #8E8573; }
+.readiness--green .readiness__status::before { background: #A9B795; }
+.readiness--red .readiness__status::before { background: var(--terra); }
 .ico { width: 16px; height: 16px; flex: none; fill: currentColor; vertical-align: -3px; }
 
 /* ── 2. Goal ─────────────────────────────────────────────── */
@@ -341,6 +357,8 @@ ol { padding: 0; list-style: none; }
 .row--moved .row__what { color: var(--terra); }
 .row__was { text-decoration-thickness: 1px; }
 .row--moved .row__note { color: var(--terra); }
+.row__note--plain { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.row--today .row__note--plain { color: var(--plate-mute); background: none; padding: 0; }
 
 @media (min-width: 960px) {
   .rows {
@@ -412,6 +430,25 @@ ol { padding: 0; list-style: none; }
 .key--target { height: 2px; background: repeating-linear-gradient(90deg, var(--terra) 0 4px, transparent 4px 7px); vertical-align: 3px; margin-left: 8px !important; }
 .key--done { background: var(--ink); }
 .key--plan { background: transparent; border: 1px solid var(--ink-2); margin-left: 8px !important; }
+
+/* ── 3b. Review, supplements, notes ──────────────────────── */
+.log { display: grid; gap: 0; }
+@media (min-width: 640px) { .log { grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 32px; } }
+.log .muted { color: var(--gravel-ink); font-weight: 500; }
+.review__prose { margin-top: 10px; color: var(--ink); }
+.review__only { margin-top: 10px; font: 600 13px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--gravel-ink); }
+.figures--small dd { font-size: 22px; }
+.supps, .notes { margin-top: 10px; }
+.supp { display: grid; grid-template-columns: 20px 1fr auto; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--gravel); }
+.supp:first-child { border-top: 0; }
+.supp--taken .supp__name { color: var(--ink-2); }
+.supp__dot { width: 10px; height: 10px; margin-left: 4px; border: 1px solid var(--gravel-ink); }
+.supp__meta { font-size: 13px; color: var(--gravel-ink); }
+.note { padding: 8px 0; border-top: 1px solid var(--gravel); }
+.note:first-child { border-top: 0; padding-top: 0; }
+.note__date { font: 600 12px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--gravel-ink); }
+.note p { margin-top: 4px; }
+.note__tags { font-size: 13px; color: var(--gravel-ink); }
 
 .empty {
   margin-top: 10px;
