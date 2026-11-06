@@ -38,8 +38,12 @@ SAMPLE: dict = {
         "why": "Slept 7h10, HRV in range. First call at 09:30, so the morning slot holds.",
         "status": "planned",
         "in_zwift": True,
+        # Set when a job eased the session (R17); `advice` when it could not because Lapo locked it (KTD9).
+        "eased": {"at": "06:50", "reason": "HRV 18% under baseline, short sleep."},
+        "advice": None,
     },
-    "readiness": {"available": False, "days_collected": 9, "days_needed": 14},
+    "readiness": {"available": False, "days_collected": 9, "days_needed": 14, "status": "amber",
+                  "flags": ["HRV below baseline", "Short sleep"]},
     "goal": {
         "name": "Strade Bianche Gran Fondo",
         "route": "Short route",
@@ -80,7 +84,7 @@ SAMPLE: dict = {
     },
     "week": [
         {"dow": "Mon", "date": "2", "kind": "gym", "title": "Gym", "slot": "12:30", "status": "done"},
-        {"dow": "Tue", "date": "3", "kind": "ride", "title": "Sweet spot 3×8", "slot": "07:00", "status": "planned", "today": True},
+        {"dow": "Tue", "date": "3", "kind": "ride", "title": "Sweet spot 3×8", "slot": "07:00", "status": "planned", "today": True, "note": "Eased: HRV 18% under baseline"},
         {"dow": "Wed", "date": "4", "kind": "ride", "title": "Z2 endurance 50′", "slot": "", "status": "moved", "note": "Train 08:30 · moved to Thu"},
         {"dow": "Thu", "date": "5", "kind": "ride", "title": "Z2 endurance 50′", "slot": "18:30", "status": "planned"},
         {"dow": "Fri", "date": "6", "kind": "gym", "title": "Gym", "slot": "12:30", "status": "planned"},
@@ -133,6 +137,26 @@ SAMPLE: dict = {
             "segments": [],
         },
     ],
+    "review": {
+        "week": "W44 · from Mon 26 Oct",
+        "prose": "Solid week: four of five sessions done, the long ride held Z2 throughout. Sleep dipped midweek.",
+        "numbers": [
+            {"label": "Hours", "value": "4.0"},
+            {"label": "Tss", "value": "268"},
+            {"label": "Sessions done", "value": "4"},
+            {"label": "Sessions planned", "value": "5"},
+        ],
+    },
+    "supplements": [
+        {"name": "Vitamin D", "dose": "2000 IU", "timing": "morning", "taken": True},
+        {"name": "Creatine", "dose": "5 g", "timing": "with meal", "taken": False},
+        {"name": "Magnesium", "dose": "300 mg", "timing": "evening", "taken": False},
+    ],
+    "notes": [
+        {"date": "Mon 2 Nov", "text": "Left knee a bit stiff after gym, fine on the bike.", "tags": ["knee"]},
+        {"date": "Sun 1 Nov", "text": "Long ride felt easy, could have pushed the last hour.", "tags": []},
+        {"date": "Thu 29 Oct", "text": "Late dinner, slept badly.", "tags": ["sleep"]},
+    ],
 }
 
 
@@ -150,5 +174,9 @@ def sample_context(state: str = "full") -> dict:
         ctx["adherence"] = None
         ctx["power"] = None
         ctx["rides"] = []
-        ctx["readiness"]["days_collected"] = 0
+        ctx["readiness"].update(days_collected=0, status="unknown", flags=[])
+        ctx["session"].update(eased=None)
+        ctx["review"] = None
+        ctx["supplements"] = []
+        ctx["notes"] = []
     return ctx

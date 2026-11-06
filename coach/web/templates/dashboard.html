@@ -35,14 +35,18 @@
       </span>
     </p>
     <p class="plate__detail">{{ session.detail }}</p>
-    <p class="plate__why">{{ session.why }}</p>
+    {% if session.why %}<p class="plate__why">{{ session.why }}</p>{% endif %}
+    {% if session.eased %}<p class="plate__eased"><b>Eased at <span class="num">{{ session.eased.at }}</span>:</b> {{ session.eased.reason }}</p>{% endif %}
+    {% if session.advice %}<p class="plate__eased"><b>Coach suggests easing (session locked):</b> {{ session.advice.reason }}</p>{% endif %}
     {% if session.in_zwift %}<p class="plate__ready"><svg class="ico"><use href="#i-check"/></svg>Waiting in Zwift</p>{% endif %}
     {% else %}
     <h1 id="today-title" class="plate__title"><span class="plate__name">Rest day<span class="plate__sub">Nothing scheduled</span></span></h1>
     <p class="plate__why">The coach left today open. Recovery counts as training.</p>
     {% endif %}
-    {% if not readiness.available %}
-    <p class="plate__note">Readiness starts after {{ readiness.days_needed }} days of sleep and HRV data. {{ readiness.days_collected }} of {{ readiness.days_needed }} so far.</p>
+    {% if readiness.status == 'unknown' %}
+    <p class="plate__note">Readiness unknown: needs {{ readiness.days_needed }} nights of sleep and HRV, {{ readiness.days_collected }} so far.</p>
+    {% else %}
+    <p class="readiness readiness--{{ readiness.status }}"><span class="readiness__status">Readiness {{ readiness.status }}</span>{% for f in readiness.flags %}<span class="readiness__flag">{{ f }}</span>{% endfor %}</p>
     {% endif %}
   </section>
 
@@ -105,7 +109,7 @@
         <span class="row__day"><b>{{ d.dow }}</b> <span class="num">{{ d.date }}</span></span>
         <span class="row__what">
           {% if d.status == 'moved' %}<svg class="ico"><use href="#i-moved"/></svg><s class="row__was">{{ d.title }}</s><span class="row__note">{{ d.get('note', '') }}</span>
-          {% else %}{{ d.title }}{% if d.get('today') %}<span class="row__note">Today</span>{% endif %}{% endif %}
+          {% else %}{{ d.title }}{% if d.get('note') %}<span class="row__note row__note--plain">{{ d.note }}</span>{% endif %}{% if d.get('today') %}<span class="row__note">Today</span>{% endif %}{% endif %}
         </span>
         <span class="row__end">
           {% if d.status == 'done' %}<svg class="ico ico--done" role="img" aria-label="Done"><use href="#i-check"/></svg>
@@ -115,6 +119,49 @@
       </li>
       {% endfor %}
     </ol>
+  </section>
+
+  {# ── 3b. Last week's review, supplements, notes ──────────── #}
+  <section class="log" aria-labelledby="review-title">
+    <article class="panel">
+      <h2 id="review-title" class="h3">Week review{% if review %} <span class="muted">· {{ review.week }}</span>{% endif %}</h2>
+      {% if review %}
+      {% if review.prose %}<p class="review__prose">{{ review.prose }}</p>{% else %}<p class="review__only">Numbers only</p>{% endif %}
+      {% if review.numbers %}
+      <dl class="figures figures--small">
+        {% for n in review.numbers %}<div><dt>{{ n.label }}</dt><dd class="num">{{ n.value }}</dd></div>{% endfor %}
+      </dl>
+      {% endif %}
+      {% else %}
+      <p class="empty">The first review lands after the first full week.</p>
+      {% endif %}
+    </article>
+
+    <article class="panel">
+      <h2 class="h3">Supplements today</h2>
+      {% if supplements %}
+      <ul class="supps">
+        {% for x in supplements %}
+        <li class="supp{{ ' supp--taken' if x.taken }}">{% if x.taken %}<svg class="ico ico--done" role="img" aria-label="Taken"><use href="#i-check"/></svg>{% else %}<span class="supp__dot" aria-label="Not yet"></span>{% endif %}<span class="supp__name">{{ x.name }}</span><span class="supp__meta">{{ x.dose }}{% if x.dose %} · {% endif %}{{ x.timing }}</span></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty">No supplements set up. Tell the coach what you take.</p>
+      {% endif %}
+    </article>
+
+    <article class="panel">
+      <h2 class="h3">Notes</h2>
+      {% if notes %}
+      <ol class="notes">
+        {% for n in notes %}
+        <li class="note"><time class="note__date">{{ n.date }}</time><p>{{ n.text }}</p>{% if n.tags %}<p class="note__tags">{{ n.tags|join(' · ') }}</p>{% endif %}</li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="empty">No notes yet. Anything you tell the coach to remember shows here.</p>
+      {% endif %}
+    </article>
   </section>
 
   {# ── 4. Trends ────────────────────────────────────────────── #}

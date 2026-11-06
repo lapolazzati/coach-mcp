@@ -8,11 +8,18 @@ targets are static inputs from coach.web.course.
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from typing import Any
+from zoneinfo import ZoneInfo
 
+from coach.plan.month import SLOT_TIMES, SPORTS, _row_tss, canonical_sport
+from coach.store.db import Row, fetch_all, fetch_one
 from coach.web import course
 from coach.web.charts import fmt_hm
+
+TZ = ZoneInfo("Europe/Rome")
 
 # Readiness needs this many nights with both sleep and HRV.
 READINESS_DAYS = 14
@@ -21,8 +28,11 @@ VOLUME_WEEKS = 6
 WEIGHT_WINDOW_DAYS = 90
 POWER_WINDOW_DAYS = 42  # "last 6 weeks" vs "6 weeks before" in the power table
 RIDES_SHOWN = 5
+NOTES_SHOWN = 3
 CURVE = [("5s", 5), ("1m", 60), ("5m", 300), ("20m", 1200), ("60m", 3600)]
 
+# Sessions of a day in clock order; a slot stands for its default time.
+_SESSION_ORDER = "coalesce(start_time, CASE slot WHEN 'am' THEN '07:00' ELSE '18:00' END)"
 # Local calendar date of an activity, falling back to UTC when the source had no wall time.
 _DAY = "substr(coalesce(start_local, start_utc), 1, 10)"
 
@@ -37,8 +47,7 @@ def build_context(db: sqlite3.Connection, today: date) -> dict:
             "week": min(max((today - course.PLAN_START).days // 7 + 1, 1), course.WEEKS_TOTAL),
             "weeks_total": course.WEEKS_TOTAL,
         },
-        # The planner (U8) owns sessions and plans; until it writes rows there is nothing to show.
-        "session": None,
+        "session": _session(db, today),
         "readiness": _readiness(db, today),
         "goal": _goal(today),
         "course": {
@@ -55,6 +64,9 @@ def build_context(db: sqlite3.Connection, today: date) -> dict:
         "adherence": None,
         "power": _power(db, today, weight["now"]),
         "rides": _rides(db, today),
+        "review": _review(db, monday),
+        "supplements": _supplements(db, today),
+        "notes": _notes(db),
     }
 
 
@@ -69,7 +81,78 @@ def _readiness(db: sqlite3.Connection, today: date) -> dict:
         " AND sleep_secs IS NOT NULL AND hrv_ms IS NOT NULL",
         (since.isoformat(), today.isoformat()),
     ).fetchone()
-    return {"available": n >= READINESS_DAYS, "days_collected": n, "days_needed": READINESS_DAYS}
+    row = fetch_one(db, "SELECT status, flags_json FROM readiness_day WHERE date = ?", (today.isoformat(),))
+    return {
+        "available": n >= READINESS_DAYS, "days_collected": n, "days_needed": READINESS_DAYS,
+        "status": row["status"] if row else "unknown",
+        "flags": [str(f) for f in _json(row["flags_json"], [])] if row else [],
+    }
+
+
+def _json(text: str | None, default: Any) -> Any:
+    try:
+        return json.loads(text) if text else default
+    except ValueError:
+        return default
+
+
+def _kind(sport: object) -> str:
+    """Dashboard kind (ride, run, gym, rest) of a planned session's sport."""
+    try:
+        return SPORTS[canonical_sport(str(sport))][1] or "rest"
+    except ValueError:
+        return "rest"
+
+
+def _local_hm(ts_utc: str) -> str:
+    return datetime.fromisoformat(ts_utc).astimezone(TZ).strftime("%H:%M")
+
+
+def _slot(row: Row) -> str:
+    return str(row["start_time"] or SLOT_TIMES.get(str(row["slot"]), ""))
+
+
+def _session(db: sqlite3.Connection, today: date) -> dict | None:
+    """Today's first planned (or done) session, with the reason for any ease (R17, KTD9)."""
+    row = fetch_one(
+        db,
+        "SELECT * FROM planned_session WHERE date = ? AND deleted_by_coach = 0 AND status IN ('planned', 'done')"
+        f" ORDER BY status = 'done', {_SESSION_ORDER} LIMIT 1",
+        (today.isoformat(),),
+    )
+    if row is None:
+        return None
+    tss = round(_row_tss(row))
+    kind = _kind(row["sport"])
+    minutes = int(row["duration_min"] or 0)
+    eased = None
+    if row["eased_at"]:
+        eased = {"at": _local_hm(row["eased_at"]), "reason": row["ease_reason"] or ""}
+    # A job cannot ease a session Lapo locked; it leaves advice in the audit log instead.
+    advice = None
+    note = fetch_one(
+        db,
+        "SELECT ts_utc, reason FROM audit WHERE action = 'ease_advice' AND entity = 'planned_session'"
+        " AND entity_id = ? AND undone = 0 ORDER BY id DESC LIMIT 1",
+        (str(row["id"]),),
+    )
+    if note is not None:
+        advice = {"at": _local_hm(note["ts_utc"]), "reason": note["reason"] or ""}
+    return {
+        "kind": kind,
+        "title": row["name"] or kind.capitalize(),
+        "subtitle": str(row["kind"] or "").capitalize(),
+        "slot": _slot(row),
+        "duration_min": minutes,
+        "tss": tss,
+        "rating": min(max(round(tss / 25), 1), 5),
+        "detail": f"{minutes} min" + (f" {row['kind']}" if row["kind"] else ""),
+        "why": "",  # the ease reason shows in its own banner
+        "status": row["status"],
+        "in_zwift": bool(row["icu_event_id"]),
+        "eased": eased,
+        "advice": advice,
+    }
 
 
 def _goal(today: date) -> dict:
@@ -91,36 +174,65 @@ def _goal(today: date) -> dict:
 
 
 def _week(db: sqlite3.Connection, monday: date, today: date) -> list[dict]:
+    sunday = (monday + timedelta(days=6)).isoformat()
     rows = db.execute(
         f"SELECT {_DAY} AS day, sport_group, name, coalesce(start_local, start_utc) FROM activity"
         f" WHERE {_DAY} BETWEEN ? AND ? ORDER BY start_utc",
-        (monday.isoformat(), (monday + timedelta(days=6)).isoformat()),
+        (monday.isoformat(), sunday),
     ).fetchall()
     by_day: dict[str, list] = {}
     for day, group, name, start in rows:
         by_day.setdefault(day, []).append((group, name, start))
+    plans: dict[str, list[Row]] = {}
+    for p in fetch_all(
+        db,
+        "SELECT * FROM planned_session WHERE date BETWEEN ? AND ? AND deleted_by_coach = 0"
+        f" ORDER BY date, {_SESSION_ORDER}",
+        (monday.isoformat(), sunday),
+    ):
+        plans.setdefault(str(p["date"]), []).append(p)
 
     week = []
     for i in range(7):
         d = monday + timedelta(days=i)
         acts = by_day.get(d.isoformat(), [])
+        plan = plans.get(d.isoformat(), [None])[0]
         row: dict[str, object] = {"dow": f"{d:%a}", "date": str(d.day)}
         if acts:
             group = acts[0][0]
             row.update(
                 kind={"cycling": "ride", "strength": "gym"}.get(group, group),
-                title=" + ".join(name or g.capitalize() for g, name, _ in acts),
+                title=plan["name"] if plan and plan["name"] else " + ".join(
+                    name or g.capitalize() for g, name, _ in acts),
                 slot=acts[0][2][11:16],
                 status="done",
             )
+        elif plan is not None:
+            row.update(_planned_row(plan, past=d < today))
         elif d < today:
             row.update(kind="rest", title="Nothing logged", slot="", status="rest")
         else:
             row.update(kind="rest", title="Not planned yet", slot="", status="planned")
+        if plan is not None and plan["eased_at"] and "note" not in row:
+            row["note"] = f"Eased: {plan['ease_reason']}" if plan["ease_reason"] else "Eased"
         if d == today:
             row["today"] = True
         week.append(row)
     return week
+
+
+def _planned_row(plan: Row, *, past: bool) -> dict[str, object]:
+    """A day with a planned session and no logged activity."""
+    kind = _kind(plan["sport"])
+    title = str(plan["name"] or kind.capitalize())
+    status = str(plan["status"])
+    if status == "planned" and past:
+        status = "missed"  # the day is over and nothing was logged
+    if status == "moved":
+        return {"kind": kind, "title": title, "slot": "", "status": "moved", "note": "Moved"}
+    if status == "skipped":
+        return {"kind": kind, "title": f"Skipped: {title}", "slot": "", "status": "rest"}
+    return {"kind": kind, "title": title, "slot": _slot(plan) if status == "planned" else "", "status": status}
 
 
 def _fitness(db: sqlite3.Connection, today: date) -> dict | None:
@@ -236,4 +348,62 @@ def _rides(db: sqlite3.Connection, today: date) -> list[dict]:
             "segments": [],
         }
         for day, name, dist, secs, np in rows
+    ]
+
+
+def _review(db: sqlite3.Connection, monday: date) -> dict | None:
+    """The latest weekly review: Claude's prose when saved, the job's numbers always (KTD12)."""
+    weeks = fetch_one(
+        db,
+        "SELECT max(week_start) AS w FROM (SELECT week_start FROM weekly_summary UNION ALL"
+        " SELECT week_start FROM weekly_review) WHERE week_start <= ?",
+        (monday.isoformat(),),
+    )
+    if weeks is None or weeks["w"] is None:
+        return None
+    week = str(weeks["w"])
+    summary = fetch_one(db, "SELECT metrics_json FROM weekly_summary WHERE week_start = ?", (week,))
+    prose = fetch_one(db, "SELECT text FROM weekly_review WHERE week_start = ?", (week,))
+    metrics = _json(summary["metrics_json"], {}) if summary else {}
+    start = date.fromisoformat(week)
+    return {
+        "week": f"W{start.isocalendar().week} · from {_label(start)}",
+        "prose": prose["text"] if prose else None,
+        "numbers": [
+            {"label": str(k).replace("_", " ").capitalize(), "value": _fmt_metric(v)}
+            for k, v in (metrics.items() if isinstance(metrics, dict) else [])
+            if isinstance(v, (int, float, str)) and not isinstance(v, bool)
+        ],
+    }
+
+
+def _fmt_metric(v: float | str) -> str:
+    if isinstance(v, float):
+        return f"{v:.1f}".removesuffix(".0")
+    return str(v)
+
+
+def _supplements(db: sqlite3.Connection, today: date) -> list[dict]:
+    rows = fetch_all(
+        db,
+        "SELECT s.name, s.dose, s.timing, EXISTS (SELECT 1 FROM supplement_intake i"
+        " WHERE i.supplement_id = s.id AND i.local_date = ?) AS taken"
+        " FROM supplement s WHERE s.active = 1"
+        " ORDER BY CASE s.timing WHEN 'morning' THEN 0 WHEN 'lunch' THEN 1 WHEN 'with_meal' THEN 2 ELSE 3 END, s.name",
+        (today.isoformat(),),
+    )
+    return [
+        {"name": r["name"], "dose": r["dose"] or "", "timing": str(r["timing"]).replace("_", " "),
+         "taken": bool(r["taken"])}
+        for r in rows
+    ]
+
+
+def _notes(db: sqlite3.Connection) -> list[dict]:
+    rows = fetch_all(db, "SELECT local_date, text, tags FROM note ORDER BY ts_utc DESC, id DESC LIMIT ?",
+                     (NOTES_SHOWN,))
+    return [
+        {"date": _label(date.fromisoformat(r["local_date"])), "text": r["text"],
+         "tags": [t for t in (r["tags"] or "").split(",") if t]}
+        for r in rows
     ]

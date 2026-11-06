@@ -3,8 +3,10 @@ from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from store_helpers import add_session
 
 from coach.ingest.garmin_export import ensure_schema
+from coach.store import derived, logs, plan_ops
 from coach.web.app import create_app
 from coach.web.context import build_context
 from coach.web.env import build_env
@@ -56,13 +58,15 @@ def test_empty_db_matches_day_one_shape(db):
     assert ctx["sample"] is False
     for key in ("fitness", "adherence", "power"):
         assert ctx[key] is None
-    assert ctx["session"] is None  # no planner yet
-    for key in ("volume", "rides"):
+    assert ctx["session"] is None  # nothing planned
+    assert ctx["review"] is None
+    for key in ("volume", "rides", "supplements", "notes"):
         assert ctx[key] == []
     assert ctx["goal"]["projected"] is None
     assert ctx["goal"]["projected_history"] == []
     assert ctx["weight"] == {**day1["weight"], "start": 82.0}
-    assert ctx["readiness"] == {"available": False, "days_collected": 0, "days_needed": 14}
+    assert ctx["readiness"] == {"available": False, "days_collected": 0, "days_needed": 14,
+                                "status": "unknown", "flags": []}
     for key in ("today", "readiness", "goal", "course", "weight"):
         assert ctx[key].keys() == SAMPLE[key].keys(), key
 
@@ -130,7 +134,8 @@ def test_readiness_counts_nights_with_sleep_and_hrv(db):
         hrv = None if i == 3 else 60
         db.execute("INSERT INTO wellness_day (date, sleep_secs, hrv_ms, updated_at) VALUES (?,?,?,?)",
                    ((TODAY - timedelta(days=i)).isoformat(), 27000, hrv, NOW))
-    assert build_context(db, TODAY)["readiness"] == {"available": False, "days_collected": 13, "days_needed": 14}
+    assert build_context(db, TODAY)["readiness"] == {"available": False, "days_collected": 13, "days_needed": 14,
+                                                     "status": "unknown", "flags": []}
 
 
 def test_fitness_uses_ctl_atl_only_when_present(db):
@@ -181,6 +186,119 @@ def test_rides_are_latest_cycling_first(db):
         {"date": "Mon 2 Nov", "title": "Ride", "km": 20.0, "time": "0:45", "np": None, "segments": []},
         {"date": "Fri 30 Oct", "title": "Bettola", "km": 62.3, "time": "2:15", "np": 180, "segments": []},
     ]
+
+
+# --- U11: plan, readiness, review, supplements, notes ------------------------
+
+
+def _render(ctx):
+    return build_env().get_template("dashboard.html").render(static_url="/static", **ctx)
+
+
+def test_today_shows_the_planned_session(db):
+    add_session(db, TODAY.isoformat(), icu_event_id=42)
+    session = build_context(db, TODAY)["session"]
+    assert session["title"] == "3x12 threshold" and session["kind"] == "ride"
+    assert session["slot"] == "07:00" and session["duration_min"] == 90 and session["in_zwift"] is True
+    assert session["eased"] is None and session["advice"] is None
+    assert 1 <= session["rating"] <= 5
+
+
+def test_eased_session_renders_banner_with_reason(db):
+    ext = add_session(db, TODAY.isoformat())
+    plan_ops.ease_session(db, ext, eased={"duration_min": 45}, reason="HRV 20% under baseline",
+                          actor="job:morning")
+    ctx = build_context(db, TODAY)
+    assert ctx["session"]["eased"]["reason"] == "HRV 20% under baseline"
+    assert ctx["session"]["duration_min"] == 45
+    html = _render(ctx)
+    assert "Eased at" in html and "HRV 20% under baseline" in html
+    assert "Eased: HRV 20% under baseline" in html  # week row note too
+
+
+def test_locked_session_shows_ease_advice(db):
+    ext = add_session(db, TODAY.isoformat(), user_locked=1)
+    plan_ops.ease_session(db, ext, eased={"duration_min": 45}, reason="Short sleep", actor="job:morning")
+    session = build_context(db, TODAY)["session"]
+    assert session["eased"] is None and session["duration_min"] == 90
+    assert session["advice"]["reason"] == "Short sleep"
+    assert "Coach suggests easing (session locked):" in _render(build_context(db, TODAY))
+
+
+def test_unknown_readiness_renders_neutral_needs_14_nights(db):
+    html = _render(build_context(db, TODAY))
+    assert "needs 14 nights" in html
+    assert "readiness--" not in html
+
+
+def test_known_readiness_shows_status_and_flags(db):
+    derived.upsert_readiness(db, TODAY.isoformat(), status="amber", flags=["HRV below baseline"], signals={})
+    ctx = build_context(db, TODAY)
+    assert ctx["readiness"]["status"] == "amber" and ctx["readiness"]["flags"] == ["HRV below baseline"]
+    html = _render(ctx)
+    assert "readiness--amber" in html and "HRV below baseline" in html and "needs 14 nights" not in html
+
+
+def test_week_merges_planned_and_done(db):
+    add_session(db, "2026-11-02", name="Endurance")  # done: a ride was logged
+    _ride(db, date(2026, 11, 2), name="Zwift", start="07:10")
+    add_session(db, "2026-11-03")  # past, nothing logged
+    add_session(db, "2026-11-05", slot="pm", name="Gym", sport="strength", kind="strength")
+    week = build_context(db, TODAY)["week"]
+    assert week[0]["status"] == "done" and week[0]["title"] == "Endurance"
+    assert week[1]["status"] == "missed"
+    assert week[3] | {} == {"dow": "Thu", "date": "5", "kind": "gym", "title": "Gym", "slot": "18:00",
+                            "status": "planned"}
+    sample_keys = set().union(*(d.keys() for d in SAMPLE["week"]))
+    assert all(d.keys() <= sample_keys for d in week)
+
+
+def test_review_without_prose_renders_numbers_only(db):
+    derived.upsert_weekly_summary(db, "2026-10-26", {"hours": 4.25, "sessions_done": 4, "by_day": [1, 2]})
+    review = build_context(db, TODAY)["review"]
+    assert review["prose"] is None
+    assert review["numbers"] == [{"label": "Hours", "value": "4.2"}, {"label": "Sessions done", "value": "4"}]
+    html = _render(build_context(db, TODAY))
+    assert "Numbers only" in html and "Sessions done" in html
+
+
+def test_review_prose_shows_with_numbers(db):
+    derived.upsert_weekly_summary(db, "2026-10-26", {"hours": 4.0})
+    logs.save_weekly_review(db, week_start="2026-10-26", text="Good week, sleep dipped.")
+    review = build_context(db, TODAY)["review"]
+    assert review["prose"] == "Good week, sleep dipped." and review["week"] == "W44 · from Mon 26 Oct"
+    html = _render(build_context(db, TODAY))
+    assert "Good week, sleep dipped." in html and "Numbers only" not in html and "Hours" in html
+
+
+def test_supplements_today_and_last_three_notes(db):
+    logs.upsert_supplement(db, name="Creatine", timing="with_meal", dose="5 g")
+    logs.upsert_supplement(db, name="Vitamin D", timing="morning")
+    logs.upsert_supplement(db, name="Old", timing="evening", active=False)
+    logs.log_supplement(db, supplement="Vitamin D", local_date=TODAY.isoformat())
+    for i in range(4):
+        logs.add_note(db, text=f"note {i}", tags=["knee"] if i == 3 else None, local_date="2026-11-03")
+    ctx = build_context(db, TODAY)
+    assert ctx["supplements"] == [
+        {"name": "Vitamin D", "dose": "", "timing": "morning", "taken": True},
+        {"name": "Creatine", "dose": "5 g", "timing": "with meal", "taken": False},
+    ]
+    assert [n["text"] for n in ctx["notes"]] == ["note 3", "note 2", "note 1"]
+    assert ctx["notes"][0] == {"date": "Tue 3 Nov", "text": "note 3", "tags": ["knee"]}
+
+
+def test_seeded_context_matches_sample_shape(db):
+    ext = add_session(db, TODAY.isoformat())
+    plan_ops.ease_session(db, ext, eased={"duration_min": 45}, reason="HRV low", actor="job:morning")
+    derived.upsert_readiness(db, TODAY.isoformat(), status="green", flags=["ok"], signals={})
+    derived.upsert_weekly_summary(db, "2026-10-26", {"hours": 4.0})
+    logs.upsert_supplement(db, name="Vitamin D", timing="morning")
+    logs.add_note(db, text="hi", tags=["x"])
+    ctx = build_context(db, TODAY)
+    for key in ("session", "readiness", "supplements", "notes"):
+        assert _shape(ctx[key]) == _shape(SAMPLE[key]), key
+    # `prose` is None without a saved review: compare the rest.
+    assert _shape(ctx["review"]) == {**_shape(SAMPLE["review"]), "prose": None}
 
 
 # --- rendering -------------------------------------------------------------
