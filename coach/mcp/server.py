@@ -20,6 +20,7 @@ from starlette.responses import JSONResponse
 
 from coach.config import Settings, get_settings
 from coach.db.migrate import current_version
+from coach.mcp import tools_read
 from coach.mcp.auth import DEFAULT_STORAGE_DIR, CoachGitHubProvider
 
 REQUIRED_SCHEMA_VERSION = 4
@@ -123,6 +124,7 @@ def build_server(
         """Check that the coach MCP server is reachable and you are signed in."""
         return "pong"
 
+    tools_read.register(mcp, db_path)
     return mcp
 
 
