@@ -1,6 +1,8 @@
-# Runs on catone. Reachable only on the Tailscale IP, never on the public interface.
-# Run with: docker compose --env-file /opt/coach/.env up -d --build
-# (--env-file feeds the ${...} below; env_file only reaches the container.)
+# Runs on catone. The dashboard is reachable only on the Tailscale IP; coach-mcp binds
+# 127.0.0.1 and is published to the internet only through the cloudflared tunnel
+# (deploy/cloudflared-ingress.md).
+# Run with: docker compose --env-file /opt/coach/.env up -d --build --force-recreate
+# (--env-file feeds the ${...} below; env_file only reaches the containers.)
 services:
   coach:
     build: .
@@ -9,7 +11,37 @@ services:
     env_file: /opt/coach/.env
     environment:
       COACH_DB_PATH: /data/coach.sqlite
+      # The scheduler (sync, morning ease, weekly, backup) runs only here, never in coach-mcp.
+      COACH_SCHEDULER_ENABLED: "true"
+    volumes:
+      - /opt/coach/data:/data
+      - /opt/coach/backups:/backups
+    ports:
+      - "${COACH_BIND_HOST:?set to the Tailscale IP}:${COACH_BIND_PORT:-8000}:8000"
+
+  coach-mcp:
+    image: coach:latest
+    restart: unless-stopped
+    env_file: /opt/coach/.env
+    environment:
+      COACH_DB_PATH: /data/coach.sqlite
+      COACH_SCHEDULER_ENABLED: "false"
+      HOME: /tmp
+    # 0.0.0.0 inside the container; the host side stays on 127.0.0.1 below.
+    command: ["coach-mcp", "--host", "0.0.0.0", "--port", "9091", "--storage-dir", "/data/mcp-auth"]
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
     volumes:
       - /opt/coach/data:/data
     ports:
-      - "${COACH_BIND_HOST:?set to the Tailscale IP}:${COACH_BIND_PORT:-8000}:8000"
+      - "127.0.0.1:${COACH_MCP_BIND_PORT:-9091}:9091"
+    depends_on:
+      coach:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9091/healthz')"]
+      interval: 60s
+      timeout: 5s
+      start_period: 20s
