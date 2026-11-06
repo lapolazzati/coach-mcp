@@ -17,6 +17,9 @@ dependencies = [
     "fastmcp>=3,<4",
 ]
 
+[project.scripts]
+coach-mcp = "coach.mcp.server:main"
+
 [project.optional-dependencies]
 ingest = ["fitparse>=1.2", "fitdecode>=0.10"]
 dev = ["pytest>=8", "ruff>=0.7", "mypy>=1.13"]
