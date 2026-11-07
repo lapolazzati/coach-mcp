@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from coach.config import get_settings
 from coach.db import migrate as db_migrate
+from coach.integrations.garmin import GarminClient
 from coach.integrations.intervals import IntervalsClient
 from coach.jobs.scheduler import build_scheduler
 from coach.store import db as store_db
@@ -31,8 +32,11 @@ def build_app() -> FastAPI:
             conn.close()
         scheduler = None
         if settings.coach_scheduler_enabled:
+            # one Garmin client for the process, so its 24h bearer token is reused across runs
+            garmin = GarminClient.from_settings(settings) if settings.garmin_personal_api_key else None
             scheduler = build_scheduler(settings, lambda: store_db.connect_write(settings.coach_db_path),
-                                        lambda: IntervalsClient.from_settings(settings))
+                                        lambda: IntervalsClient.from_settings(settings),
+                                        garmin_factory=(lambda: garmin) if garmin else None)
             scheduler.start()
         try:
             yield

@@ -21,6 +21,7 @@ from apscheduler.triggers.date import DateTrigger  # type: ignore[import-untyped
 from apscheduler.triggers.interval import IntervalTrigger  # type: ignore[import-untyped]
 
 from coach.jobs import backup, morning, weekly
+from coach.jobs import garmin as garmin_job
 from coach.jobs import sync as sync_job
 from coach.store import sync
 
@@ -35,8 +36,8 @@ ClientFactory = Callable[[], Any]
 def _client(client_factory: ClientFactory) -> Any:
     try:
         return client_factory()
-    except Exception as exc:  # noqa: BLE001 - unconfigured intervals.icu just means no client
-        log.warning("jobs: no intervals client (%s)", exc)
+    except Exception as exc:  # noqa: BLE001 - an unconfigured service just means no client
+        log.warning("jobs: no client (%s)", exc)
         return None
 
 
@@ -69,7 +70,8 @@ def morning_trigger(tz: ZoneInfo) -> OrTrigger:
 
 
 def build_scheduler(settings: Any, conn_factory: ConnFactory, client_factory: ClientFactory,
-                    *, now: datetime | None = None) -> BackgroundScheduler:
+                    *, now: datetime | None = None,
+                    garmin_factory: ClientFactory | None = None) -> BackgroundScheduler:
     tz = ZoneInfo(settings.coach_tz)
     scheduler = BackgroundScheduler(timezone=tz, job_defaults=dict(JOB_DEFAULTS))
 
@@ -83,6 +85,9 @@ def build_scheduler(settings: Any, conn_factory: ConnFactory, client_factory: Cl
                       CronTrigger(day_of_week="sun", hour=20, minute=0, timezone=tz), id="weekly")
     scheduler.add_job(job("backup", lambda _conn, _client, at: backup.run(at)),
                       CronTrigger(hour=3, minute=15, timezone=tz), id="backup")
+    if garmin_factory is not None:
+        scheduler.add_job(_job("garmin", garmin_job.run, tz, conn_factory, garmin_factory),
+                          IntervalTrigger(minutes=30, timezone=tz), id="garmin")
 
     start = (now or datetime.now(tz)).astimezone(tz)
     conn = conn_factory()

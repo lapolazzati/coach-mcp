@@ -117,3 +117,11 @@ def test_weekly_flat_weight_no_flag(conn: sqlite3.Connection) -> None:
                      (day.isoformat(), "2026-11-01T00:00:00Z"))
     conn.commit()
     assert weekly.run(conn, datetime(2026, 11, 8, 20, 0, tzinfo=TZ), dry_run=True)["flags"] == []
+
+
+def test_garmin_job_only_when_configured(db_path: Path) -> None:
+    now = datetime(2026, 11, 6, 6, 40, tzinfo=TZ)
+    s = scheduler.build_scheduler(SETTINGS, lambda: connect_write(db_path), lambda: None, now=now,
+                                  garmin_factory=lambda: None)
+    assert "garmin" in {j.id for j in s.get_jobs()}
+    assert "garmin" not in {j.id for j in build(db_path, now).get_jobs()}
