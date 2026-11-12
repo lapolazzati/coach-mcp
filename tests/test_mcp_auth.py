@@ -25,6 +25,7 @@ from coach.mcp import server as mcp_server
 from coach.mcp.auth import (
     CLAUDE_REDIRECT_URI,
     DEFAULT_MAX_CLIENTS,
+    RAYCAST_CLIENT_ID,
     AllowlistError,
     AllowlistGitHubTokenVerifier,
     CoachGitHubProvider,
@@ -159,13 +160,14 @@ def seed_code(
     provider: CoachGitHubProvider,
     client_id: str,
     idp_tokens: dict[str, Any],
+    redirect_uri: str = CLAUDE_REDIRECT_URI,
 ) -> tuple[str, str]:
     """Stand in for the GitHub callback: an authorization code holding upstream tokens."""
     verifier = secrets.token_urlsafe(48)
     code = ClientCode(
         code=secrets.token_urlsafe(24),
         client_id=client_id,
-        redirect_uri=CLAUDE_REDIRECT_URI,
+        redirect_uri=redirect_uri,
         code_challenge=s256(verifier),
         code_challenge_method="S256",
         scopes=["user"],
@@ -180,7 +182,11 @@ def seed_code(
 
 
 def exchange(
-    client: TestClient, client_id: str, code: str, verifier: str
+    client: TestClient,
+    client_id: str,
+    code: str,
+    verifier: str,
+    redirect_uri: str = CLAUDE_REDIRECT_URI,
 ) -> httpx.Response:
     return client.post(
         "/token",
@@ -188,7 +194,7 @@ def exchange(
             "grant_type": "authorization_code",
             "code": code,
             "code_verifier": verifier,
-            "redirect_uri": CLAUDE_REDIRECT_URI,
+            "redirect_uri": redirect_uri,
             "client_id": client_id,
         },
     )
@@ -329,6 +335,80 @@ def test_s256_pkce_proceeds_to_consent(make_client) -> None:
     assert response.status_code == 302
     assert "error=" not in response.headers["location"]
     assert not response.headers["location"].startswith(CLAUDE_REDIRECT_URI)
+
+
+# --- Raycast (pinned CIMD client) ---------------------------------------------------
+
+RAYCAST_LOOPBACK = "http://127.0.0.1:58866/callback"
+
+
+def _authorize_raycast(client: TestClient, redirect_uri: str) -> httpx.Response:
+    return client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": RAYCAST_CLIENT_ID,
+            "redirect_uri": redirect_uri,
+            "code_challenge": s256("v" * 50),
+            "code_challenge_method": "S256",
+            "state": "xyz",
+            "resource": RESOURCE,
+        },
+        follow_redirects=False,
+    )
+
+
+def test_raycast_loopback_proceeds_to_consent(make_client) -> None:
+    client, _ = make_client()
+    response = _authorize_raycast(client, RAYCAST_LOOPBACK)
+    assert response.status_code == 302
+    assert "error=" not in response.headers["location"]
+    assert not response.headers["location"].startswith("http://127.0.0.1")
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    [
+        "https://evil.example/callback",
+        "http://127.0.0.1:58866/other",
+        "http://localhost:58866/callback",
+        "http://127.0.0.1.evil.example:58866/callback",
+        "com.raycast:/oauth",
+        CLAUDE_REDIRECT_URI,
+    ],
+)
+def test_raycast_rejects_non_loopback_redirects(make_client, redirect_uri: str) -> None:
+    client, _ = make_client()
+    response = _authorize_raycast(client, redirect_uri)
+    assert response.status_code == 400
+
+
+def test_raycast_still_goes_through_the_allowlist(make_client) -> None:
+    client, provider = make_client()
+    code, verifier = seed_code(
+        client,
+        provider,
+        RAYCAST_CLIENT_ID,
+        {"access_token": "gh-other"},
+        RAYCAST_LOOPBACK,
+    )
+    response = exchange(client, RAYCAST_CLIENT_ID, code, verifier, RAYCAST_LOOPBACK)
+    assert response.status_code == 401
+    assert response.json()["error"] == "invalid_grant"
+
+
+def test_raycast_token_exchange_for_lapo(make_client) -> None:
+    client, provider = make_client()
+    code, verifier = seed_code(
+        client,
+        provider,
+        RAYCAST_CLIENT_ID,
+        {"access_token": "gh-lapo"},
+        RAYCAST_LOOPBACK,
+    )
+    response = exchange(client, RAYCAST_CLIENT_ID, code, verifier, RAYCAST_LOOPBACK)
+    assert response.status_code == 200, response.text
+    assert call_mcp(client, response.json()["access_token"]).status_code == 200
 
 
 # --- the one-account allowlist -------------------------------------------------------

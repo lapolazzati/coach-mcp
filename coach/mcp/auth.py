@@ -9,6 +9,10 @@ it lacks natively, each as the smallest override:
   refuses to issue a coach token unless it equals ``COACH_MCP_ALLOWED_GITHUB_ID``.
   It fails closed: a GitHub error, bad JSON or a missing/non-integer id is a refusal.
   ``AllowlistGitHubTokenVerifier`` repeats the check on every MCP request.
+- Raycast. Its CIMD document lists host-less redirect URIs (``com.raycast:/oauth``)
+  that FastMCP's CIMD validator rejects, so the whole document fails and the client
+  is "not found". ``get_client`` answers for Raycast's client id with a pinned client
+  that only accepts a loopback ``http://127.0.0.1:<port>/callback`` redirect.
 - A cap on DCR registrations. ``OAuthProxy.register_client`` validates redirect_uris
   but never counts clients, so the override keeps its own registry and refuses
   registrations past the cap.
@@ -27,6 +31,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.jwt_issuer import derive_jwt_key
+from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
 from fastmcp.server.auth.providers.github import GitHubProvider, GitHubTokenVerifier
 from key_value.aio.protocols import AsyncKeyValue
 from key_value.aio.stores.filetree import (
@@ -37,9 +42,14 @@ from key_value.aio.stores.filetree import (
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 from mcp.server.auth.provider import AuthorizationCode, RegistrationError, TokenError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import AnyUrl
 
 GITHUB_USER_URL = "https://api.github.com/user"
 CLAUDE_REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback"
+RAYCAST_CLIENT_ID = (
+    "https://www.raycast.com/.well-known/oauth-client-metadata/raycast.json"
+)
+RAYCAST_REDIRECT_PATTERN = "http://127.0.0.1:*/callback"
 DEFAULT_STORAGE_DIR = Path("/data/mcp-auth")
 ACCESS_TOKEN_TTL_SECONDS = 3600  # ~1 h, per KTD2
 REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600  # absolute bound; rotation keeps it
@@ -210,6 +220,23 @@ class CoachGitHubProvider(GitHubProvider):
                 "invalid_grant", "This GitHub account is not allowed"
             ) from exc
         return await super().exchange_authorization_code(client, authorization_code)
+
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        if client_id == RAYCAST_CLIENT_ID:
+            # Pinned instead of fetched: Raycast's CIMD document does not validate
+            # (host-less custom-scheme redirect URIs). Public client, PKCE, loopback
+            # only; the GitHub allowlist still decides who gets a token.
+            return ProxyDCRClient(
+                client_id=RAYCAST_CLIENT_ID,
+                client_secret=None,
+                redirect_uris=[AnyUrl("http://127.0.0.1/callback")],
+                grant_types=["authorization_code", "refresh_token"],
+                scope=self._default_scope_str,
+                token_endpoint_auth_method="none",
+                allowed_redirect_uri_patterns=[RAYCAST_REDIRECT_PATTERN],
+                client_name="Raycast",
+            )
+        return await super().get_client(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         async with self._registry_lock:
