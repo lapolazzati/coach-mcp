@@ -33,6 +33,7 @@ from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.jwt_issuer import derive_jwt_key
 from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
 from fastmcp.server.auth.providers.github import GitHubProvider, GitHubTokenVerifier
+from fastmcp.server.auth.redirect_validation import validate_redirect_uri
 from key_value.aio.protocols import AsyncKeyValue
 from key_value.aio.stores.filetree import (
     FileTreeStore,
@@ -237,6 +238,16 @@ class CoachGitHubProvider(GitHubProvider):
                 client_name="Raycast",
             )
         return await super().get_client(client_id)
+
+    def _validate_client_redirect_uri(self, redirect_uri: str) -> bool:
+        # FastMCP re-checks the stored redirect on GitHub's callback against the
+        # global list only (Claude's). Raycast's loopback was already checked
+        # per client at /authorize, so accept it here too.
+        return super()._validate_client_redirect_uri(
+            redirect_uri
+        ) or validate_redirect_uri(
+            redirect_uri=redirect_uri, allowed_patterns=[RAYCAST_REDIRECT_PATTERN]
+        )
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         async with self._registry_lock:

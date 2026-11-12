@@ -383,6 +383,40 @@ def test_raycast_rejects_non_loopback_redirects(make_client, redirect_uri: str) 
     assert response.status_code == 400
 
 
+def test_raycast_idp_callback_is_not_blocked(make_client) -> None:
+    """GitHub's callback re-checks the stored redirect; it must accept Raycast's."""
+    import re
+
+    client, _ = make_client()
+    consent = _authorize_raycast(client, RAYCAST_LOOPBACK)
+    page = client.get(consent.headers["location"])
+    assert page.status_code == 200
+    fields = dict(
+        re.findall(r'name="(txn_id|csrf_token)"\s+value="([^"]+)"', page.text)
+    )
+    assert set(fields) == {"txn_id", "csrf_token"}, page.text[:500]
+    approved = client.post(
+        "/consent",
+        data={**fields, "action": "approve"},
+        follow_redirects=False,
+    )
+    assert approved.status_code == 302, approved.text
+    upstream = urlparse(approved.headers["location"])
+    state = parse_qs(upstream.query)["state"][0]
+    callback = client.get(
+        "/auth/callback", params={"code": "c", "state": state}, follow_redirects=False
+    )
+    assert "Invalid redirect URI" not in callback.text
+
+
+def test_idp_callback_still_blocks_unknown_redirects(make_client) -> None:
+    _, provider = make_client()
+    assert provider._validate_client_redirect_uri(RAYCAST_LOOPBACK)
+    assert provider._validate_client_redirect_uri(CLAUDE_REDIRECT_URI)
+    assert not provider._validate_client_redirect_uri("https://evil.example/callback")
+    assert not provider._validate_client_redirect_uri("http://localhost:58866/callback")
+
+
 def test_raycast_still_goes_through_the_allowlist(make_client) -> None:
     client, provider = make_client()
     code, verifier = seed_code(
