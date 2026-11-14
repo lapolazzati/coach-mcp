@@ -12,7 +12,7 @@ dependencies = [
     "apscheduler>=3.10,<4",
     "google-api-python-client>=2.150",
     "google-auth>=2.35",
-    "garminconnect>=0.3,<0.4",
+    "fitdecode>=0.10",
     "pillow>=11",
     "fastmcp>=3,<4",
 ]
@@ -21,7 +21,7 @@ dependencies = [
 coach-mcp = "coach.mcp.server:main"
 
 [project.optional-dependencies]
-ingest = ["fitparse>=1.2", "fitdecode>=0.10"]
+ingest = ["fitparse>=1.2"]
 dev = ["pytest>=8", "ruff>=0.7", "mypy>=1.13"]
 
 [build-system]

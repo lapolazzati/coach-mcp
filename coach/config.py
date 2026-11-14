@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     garmin_personal_api_key: SecretStr | None = None
     garmin_personal_api_key_expires: date | None = None
+    # Raw FIT files (gzipped) from Garmin; defaults to <db dir>/fit.
+    coach_fit_dir: Path | None = None
 
     # Remote MCP server for the Claude app (coach-mcp service). All optional so the
     # dashboard boots without them; coach-mcp itself refuses to start if unset.
@@ -58,6 +60,10 @@ class Settings(BaseSettings):
     def _blank_is_none(cls, v):
         # Empty lines in .env ("KEY=") mean "not set yet", not an empty secret.
         return None if isinstance(v, str) and not v.strip() else v
+
+    @property
+    def fit_dir(self) -> Path:
+        return self.coach_fit_dir or self.coach_db_path.parent / "fit"
 
 
 @lru_cache
