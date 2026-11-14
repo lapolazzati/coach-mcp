@@ -12,8 +12,10 @@ Training readiness and acute/chronic load are not exposed by this API.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import time
+import zipfile
 from collections.abc import Iterator
 from datetime import date, timedelta
 from typing import Any
@@ -50,6 +52,8 @@ def windows(oldest: date, newest: date, days: int = WINDOW_DAYS) -> Iterator[tup
 
 
 class GarminClient:
+    PAGE = 100  # activity search page size
+
     def __init__(self, api_key: str, *, base_url: str = BASE_URL,
                  transport: httpx.BaseTransport | None = None, retries: int = 3, backoff_s: float = 1.0,
                  clock: Any = time.time):
@@ -95,14 +99,20 @@ class GarminClient:
             self._token_exp = _jwt_exp(token) or self._clock() + 23 * 3600
         return self._token  # type: ignore[return-value]
 
-    def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
+    def _response(self, path: str, params: dict[str, Any] | None = None,
+                  accept: str = "application/json") -> httpx.Response:
         for fresh in (False, True):
-            headers = {"Authorization": f"Bearer {self._bearer(force=fresh)}", "Accept": "application/json"}
+            headers = {"Authorization": f"Bearer {self._bearer(force=fresh)}", "Accept": accept}
             resp = self._send("GET", path, params=params, headers=headers)
             if resp.status_code != 401:
                 break
         if resp.is_error:
-            raise GarminError(f"GET {path} -> {resp.status_code}: {resp.text[:200]}")
+            body = resp.text[:200] if "json" in resp.headers.get("content-type", "") else ""
+            raise GarminError(f"GET {path} -> {resp.status_code}: {body}")
+        return resp
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        resp = self._response(path, params)
         if not resp.content:
             return None
         return resp.json()
@@ -131,3 +141,51 @@ class GarminClient:
             data = self._get(f"/hrv-service/hrv/daily/{a.isoformat()}/{b.isoformat()}")
             out.extend(d for d in (data or {}).get("hrvSummaries") or [] if isinstance(d, dict))
         return out
+
+    # --- activities ------------------------------------------------------------
+
+    def activities(self, oldest: date, newest: date) -> list[dict]:
+        """Activity summaries started between oldest and newest (inclusive), all pages."""
+        out: list[dict] = []
+        for a, b in windows(oldest, newest):
+            start = 0
+            while True:
+                data = self._get("/activitylist-service/activities/search/activities",
+                                 {"startDate": a.isoformat(), "endDate": b.isoformat(),
+                                  "start": start, "limit": self.PAGE})
+                if isinstance(data, dict):
+                    data = data.get("activities") or []
+                page = [d for d in data or [] if isinstance(d, dict)]
+                out.extend(page)
+                if len(page) < self.PAGE:
+                    break
+                start += self.PAGE
+        return out
+
+    def activity(self, activity_id: int | str) -> dict:
+        return self._get(f"/activity-service/activity/{_activity_id(activity_id)}") or {}
+
+    def fit(self, activity_id: int | str) -> bytes:
+        """The original FIT file of an activity (Garmin serves it zipped)."""
+        resp = self._response(f"/download-service/files/activity/{_activity_id(activity_id)}",
+                              accept="application/zip, application/octet-stream")
+        try:
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                name = next((n for n in zf.namelist() if n.lower().endswith(".fit")), None)
+                if name is None:
+                    raise GarminError(f"activity {activity_id}: no FIT file in download")
+                return zf.read(name)
+        except zipfile.BadZipFile as exc:
+            raise GarminError(f"activity {activity_id}: download is not a zip") from exc
+
+    def hr_zones(self) -> list[dict]:
+        data = self._get("/biometric-service/heartRateZones/v2")
+        return [d for d in data or [] if isinstance(d, dict)]
+
+
+def _activity_id(activity_id: int | str) -> str:
+    s = str(activity_id)
+    if not (s.isascii() and s.isdecimal() and int(s) > 0):
+        raise GarminError("activity id must be a positive integer")
+    return s
+
