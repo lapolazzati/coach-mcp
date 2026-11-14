@@ -181,7 +181,8 @@ def import_activities(conn: sqlite3.Connection, export: Path, stats: ImportStats
     updates = ", ".join(f"{c} = excluded.{c}" for c in ACTIVITY_COLUMNS if c != "garmin_activity_id")
     sql = (
         f"INSERT INTO activity ({cols}) VALUES ({marks}) "
-        f"ON CONFLICT (garmin_activity_id) DO UPDATE SET {updates}"
+        f"ON CONFLICT (garmin_activity_id) DO UPDATE SET {updates} "
+        "WHERE activity.source != 'garmin_api'"
     )
     for wrapper in _load_json_files(export, "DI-Connect-Fitness/*summarizedActivities.json"):
         for raw in wrapper.get("summarizedActivitiesExport", []):

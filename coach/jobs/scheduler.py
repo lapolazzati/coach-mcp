@@ -86,7 +86,12 @@ def build_scheduler(settings: Any, conn_factory: ConnFactory, client_factory: Cl
     scheduler.add_job(job("backup", lambda _conn, _client, at: backup.run(at)),
                       CronTrigger(hour=3, minute=15, timezone=tz), id="backup")
     if garmin_factory is not None:
-        scheduler.add_job(_job("garmin", garmin_job.run, tz, conn_factory, garmin_factory),
+        fit_dir = getattr(settings, "fit_dir", None)
+
+        def garmin_body(conn: sqlite3.Connection, client: Any, at: datetime) -> Any:
+            return garmin_job.run(conn, client, at, fit_dir=fit_dir)
+
+        scheduler.add_job(_job("garmin", garmin_body, tz, conn_factory, garmin_factory),
                           IntervalTrigger(minutes=30, timezone=tz), id="garmin")
 
     start = (now or datetime.now(tz)).astimezone(tz)
