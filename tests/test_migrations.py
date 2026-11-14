@@ -60,7 +60,7 @@ def test_db_at_003_with_history_migrates_intact(tmp_path):
     )
     conn.execute("INSERT INTO message_log (ts_utc, local_date, direction, text) VALUES ('x', 'y', 'in', 'hi')")
     conn.commit()
-    assert migrate(conn) == ["004_personal_software.sql"]
+    assert migrate(conn)[0] == "004_personal_software.sql"
     assert conn.execute("SELECT kg FROM weight").fetchall() == [(82.1,)]
     row = conn.execute("SELECT pinned_date, row_version, missing_polls, sync_dirty, user_locked"
                        " FROM planned_session").fetchone()

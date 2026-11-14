@@ -253,7 +253,7 @@ def test_healthz_reports_schema_version(make_client) -> None:
     client, _ = make_client()
     response = client.get("/healthz")
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "schema_version": 4}
+    assert response.json() == {"ok": True, "schema_version": 5}
 
 
 # --- DCR hardening ------------------------------------------------------------------

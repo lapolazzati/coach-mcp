@@ -24,7 +24,7 @@ from coach.integrations.intervals import IntervalsClient
 from coach.mcp import tools_read, tools_write
 from coach.mcp.auth import DEFAULT_STORAGE_DIR, CoachGitHubProvider
 
-REQUIRED_SCHEMA_VERSION = 4
+REQUIRED_SCHEMA_VERSION = 5
 MCP_PATH = "/mcp"
 
 # Settings field -> env var, in the order an operator would fill them in.

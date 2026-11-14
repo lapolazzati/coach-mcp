@@ -50,12 +50,21 @@ def migrate(conn: sqlite3.Connection) -> list[str]:
     for version, path in migrations():
         if version in done:
             continue
-        conn.executescript(path.read_text(encoding="utf-8"))
-        conn.execute(
-            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?,?,?)",
-            (version, path.name, datetime.now(UTC).isoformat(timespec="seconds")),
+        stamp = datetime.now(UTC).isoformat(timespec="seconds")
+        name = path.name.replace("'", "''")
+        # One transaction per file, version row included: a failing statement
+        # leaves neither half a schema change nor a version claiming it ran.
+        script = (
+            "BEGIN;\n" + path.read_text(encoding="utf-8") + "\n;"
+            f"INSERT INTO schema_migrations (version, name, applied_at) VALUES ({int(version)}, '{name}', '{stamp}');"
+            "\nCOMMIT;"
         )
-        conn.commit()
+        try:
+            conn.executescript(script)
+        except sqlite3.Error:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
         ran.append(path.name)
     return ran
 
