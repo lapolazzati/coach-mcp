@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import bisect
 import io
+import itertools
 import json
 import sqlite3
 import zipfile
@@ -387,10 +388,21 @@ def import_vo2max(conn: sqlite3.Connection, export: Path, stats: ImportStats) ->
 # --- FIT streams -----------------------------------------------------------
 
 
+PAUSE_GAP_S = 5  # record gaps longer than this are pauses (auto-pause / stop)
+STANDARD_ZONES = {"hr": 5, "power": 7}  # Garmin zone count; zone 0 = below zone 1
+
+
 @dataclass
 class FitRide:
+    """One ride from a FIT file. records keep their gaps: t is seconds from the session start."""
+
     start_epoch: float
     records: list[tuple]  # (t, power, hr, cadence, speed, distance, altitude, lat, lon)
+    session: dict = field(default_factory=dict)  # device totals (elapsed_s, timer_s, NP, IF, TSS, ...)
+    laps: list[dict] = field(default_factory=list)  # one per lap, idx 0-based, start_s on the t axis
+    zones: list[dict] = field(default_factory=list)  # session time in zone: kind, zone, seconds, low, high
+    thresholds: dict = field(default_factory=dict)  # what the device used: ftp, lthr, max_hr, resting_hr, weight_kg
+    pauses: list[tuple[int, int]] = field(default_factory=list)  # (last t before, first t after) per gap > 5 s
 
 
 def _fit_reader(data: bytes):
@@ -420,10 +432,55 @@ def _value(frame, *names):
     return None
 
 
+def _fields(frame, mapping: dict[str, str]) -> dict:
+    return {key: frame.get_value(name, fallback=None) for key, name in mapping.items()}
+
+
+def _kj(joules) -> float | None:
+    return None if joules is None else joules / 1000
+
+
+SESSION_FIELDS = {
+    "elapsed_s": "total_elapsed_time", "timer_s": "total_timer_time", "distance_m": "total_distance",
+    "avg_power": "avg_power", "max_power": "max_power", "norm_power": "normalized_power",
+    "intensity_factor": "intensity_factor", "tss": "training_stress_score",
+    "avg_hr": "avg_heart_rate", "max_hr": "max_heart_rate", "avg_cadence": "avg_cadence",
+    "ascent_m": "total_ascent", "descent_m": "total_descent", "threshold_power": "threshold_power",
+}
+LAP_FIELDS = {
+    "duration_s": "total_timer_time", "elapsed_s": "total_elapsed_time", "distance_m": "total_distance",
+    "avg_power": "avg_power", "max_power": "max_power", "norm_power": "normalized_power",
+    "avg_hr": "avg_heart_rate", "max_hr": "max_heart_rate", "avg_cadence": "avg_cadence",
+    "ascent_m": "total_ascent", "descent_m": "total_descent", "trigger": "lap_trigger",
+}
+
+
+def _zone_rows(kind: str, times, highs) -> list[dict]:
+    """Garmin layout: times[i] is zone i, bounded above by highs[i] (zone 0 = below zone 1).
+    Keeps zones 1..standard count, plus any other zone with time in it."""
+    times = [t for t in (times or ()) if t is not None]
+    highs = [h for h in (highs or ()) if h is not None]
+    rows = []
+    for i, seconds in enumerate(times):
+        if not (1 <= i <= STANDARD_ZONES[kind] or seconds > 0):
+            continue
+        rows.append({
+            "kind": kind, "zone": i, "seconds": seconds,
+            "low": highs[i - 1] if 0 < i <= len(highs) else None,
+            "high": highs[i] if i < len(highs) else None,
+        })
+    return rows
+
+
 def parse_fit_ride(data: bytes) -> FitRide | None:
     import fitdecode
 
     session_start = None
+    session: dict = {}
+    session_zone = None
+    profile: dict = {}
+    targets: dict = {}
+    lap_frames: list[dict] = []
     samples: dict[datetime, tuple] = {}
     with _fit_reader(data) as fr:
         for frame in fr:
@@ -431,6 +488,27 @@ def parse_fit_ride(data: bytes) -> FitRide | None:
                 continue
             if frame.name == "session" and session_start is None:
                 session_start = frame.get_value("start_time", fallback=None)
+                session = _fields(frame, SESSION_FIELDS)
+                session["work_kj"] = _kj(frame.get_value("total_work", fallback=None))
+            elif frame.name == "lap":
+                lap = _fields(frame, LAP_FIELDS)
+                lap["start"] = frame.get_value("start_time", fallback=None)
+                lap["work_kj"] = _kj(frame.get_value("total_work", fallback=None))
+                lap_frames.append(lap)
+            elif frame.name == "time_in_zone":
+                ref = frame.get_value("reference_mesg", fallback=None)
+                if ref in ("session", 18) and session_zone is None:
+                    session_zone = _fields(frame, {
+                        "hr_times": "time_in_hr_zone", "power_times": "time_in_power_zone",
+                        "hr_highs": "hr_zone_high_boundary", "power_highs": "power_zone_high_boundary",
+                        "ftp": "functional_threshold_power", "lthr": "threshold_heart_rate",
+                        "max_hr": "max_heart_rate", "resting_hr": "resting_heart_rate",
+                    })
+            elif frame.name == "zones_target" and not targets:
+                targets = _fields(frame, {"ftp": "functional_threshold_power",
+                                          "lthr": "threshold_heart_rate", "max_hr": "max_heart_rate"})
+            elif frame.name == "user_profile" and not profile:
+                profile = _fields(frame, {"weight_kg": "weight", "resting_hr": "resting_heart_rate"})
             elif frame.name == "record":
                 ts = frame.get_value("timestamp", fallback=None)
                 if ts is None:
@@ -456,7 +534,36 @@ def parse_fit_ride(data: bytes) -> FitRide | None:
         if t >= 0:
             by_t[t] = values
     records = [(t, *values) for t, values in sorted(by_t.items())]
-    return FitRide(start_epoch=start.timestamp(), records=records) if records else None
+    if not records:
+        return None
+
+    laps = []
+    for idx, lap in enumerate(lap_frames):
+        lap_start = lap.pop("start")
+        laps.append({
+            "idx": idx,
+            "start_utc": lap_start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ") if lap_start else None,
+            "start_s": (lap_start - start).total_seconds() if lap_start else None,
+            **lap,
+        })
+
+    zone = session_zone or {}
+    zones = _zone_rows("hr", zone.get("hr_times"), zone.get("hr_highs")) + _zone_rows(
+        "power", zone.get("power_times"), zone.get("power_highs"))
+
+    def first(*values):
+        return next((v for v in values if v is not None), None)
+
+    thresholds = {
+        "ftp": first(targets.get("ftp"), zone.get("ftp"), session.get("threshold_power")),
+        "lthr": first(targets.get("lthr"), zone.get("lthr")),
+        "max_hr": first(targets.get("max_hr"), zone.get("max_hr")),
+        "resting_hr": first(profile.get("resting_hr"), zone.get("resting_hr")),
+        "weight_kg": profile.get("weight_kg"),
+    }
+    pauses = [(a[0], b[0]) for a, b in itertools.pairwise(records) if b[0] - a[0] > PAUSE_GAP_S]
+    return FitRide(start_epoch=start.timestamp(), records=records, session=session, laps=laps,
+                   zones=zones, thresholds=thresholds, pauses=pauses)
 
 
 def power_bests(records: list[tuple]) -> dict[int, float]:

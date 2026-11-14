@@ -64,6 +64,13 @@ def test_fit_unzips_original():
     assert make(h).fit(123) == FIT
 
 
+def test_fit_accepts_any_content_type():
+    def h(req):
+        assert req.headers["accept"] == "*/*"  # Garmin answers 406 to zip/octet-stream
+        return httpx.Response(200, content=zipped())
+    assert make(h).fit(123) == FIT
+
+
 def test_fit_without_fit_member_raises():
     c = make(lambda req: httpx.Response(200, content=zipped("x.gpx", b"<gpx/>")))
     with pytest.raises(GarminError, match="no FIT"):

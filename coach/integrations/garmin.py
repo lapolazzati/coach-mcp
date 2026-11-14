@@ -168,7 +168,7 @@ class GarminClient:
     def fit(self, activity_id: int | str) -> bytes:
         """The original FIT file of an activity (Garmin serves it zipped)."""
         resp = self._response(f"/download-service/files/activity/{_activity_id(activity_id)}",
-                              accept="application/zip, application/octet-stream")
+                              accept="*/*")  # Garmin 406s on zip/octet-stream
         try:
             with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                 name = next((n for n in zf.namelist() if n.lower().endswith(".fit")), None)
