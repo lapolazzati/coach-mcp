@@ -1,6 +1,6 @@
 ---
 title: Garmin direct sync + ride-analysis MCP tools
-status: draft (deepened after review)
+status: Stage A implemented (U1-U6 done); deploy pending user approval
 date: 2026-11-14
 branch: feat/garmin-direct (off feat/claude-app-mcp)
 ---
@@ -50,6 +50,9 @@ The planned `coach/integrations/garmin.py` (plan 2026-11-03, U5) was never built
 - KD7 `garmin_export` re-import must not downgrade `garmin_api` rows (skip/COALESCE on conflict).
 
 ## Units — Stage A (tools 1, 2, 3, 4, 7, 8)
+
+**Progress:** U1 done (fbf98db), U2 done (a6cfc78), U3 done (74a36e9), U4 done (87cf273),
+U5 done (8fffa25), U6 done (commit "U6: Stage A MCP tools"). Deploy pending the user's approval.
 
 **U0 Deps & config** — `pyproject.toml`, `Dockerfile` unchanged, `coach/config.py`.
 - Move `fitdecode` to core deps (prod image runs `pip install .` without extras); add
@@ -104,7 +107,8 @@ The planned `coach/integrations/garmin.py` (plan 2026-11-03, U5) was never built
   Returns duration, distance, gain, avg/NP power, W/kg, VAM, avg/max HR, zone time, % above `above_w`, drift.
 - Tests: table-driven synthetic streams; NP within 1 W of Garmin on the real ride (local-only).
 
-**U6 MCP tools** — `coach/mcp/tools_read.py`, `tools_write.py`, `format.py`.
+**U6 MCP tools** — done: `coach/mcp/tools_ride.py` (new), wired in `coach/mcp/server.py`;
+tests in `tests/test_mcp_tools_ride.py`.
 - `sync_now()` (write): Garmin sync last 2 days, internal 45 s deadline, min interval 2 min stored
   in `sync_state`, respects lock; falls back to intervals sync if Garmin unavailable; says which.
 - `get_athlete_settings(date?)`: KD5 values + source + stale-FTP hint (best 20-min × 0.95 > FTP).

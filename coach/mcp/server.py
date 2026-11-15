@@ -20,8 +20,9 @@ from starlette.responses import JSONResponse
 
 from coach.config import Settings, get_settings
 from coach.db.migrate import current_version
+from coach.integrations.garmin import GarminClient
 from coach.integrations.intervals import IntervalsClient
-from coach.mcp import tools_read, tools_write
+from coach.mcp import tools_read, tools_ride, tools_write
 from coach.mcp.auth import DEFAULT_STORAGE_DIR, CoachGitHubProvider
 
 REQUIRED_SCHEMA_VERSION = 5
@@ -127,6 +128,13 @@ def build_server(
 
     tools_read.register(mcp, db_path)
     tools_write.register(mcp, db_path, client_factory=lambda: IntervalsClient.from_settings(settings))
+    tools_ride.register(
+        mcp,
+        db_path,
+        garmin_factory=(lambda: GarminClient.from_settings(settings)) if settings.garmin_personal_api_key else None,
+        intervals_factory=lambda: IntervalsClient.from_settings(settings),
+        fit_dir=settings.fit_dir,
+    )
     return mcp
 
 
