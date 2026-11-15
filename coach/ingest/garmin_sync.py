@@ -226,10 +226,13 @@ def _match(conn: sqlite3.Connection, row: dict) -> tuple[int, str | None] | None
     if hit or row["start_utc"] is None:
         return hit
     return conn.execute(
-        "SELECT id, fit_path FROM activity WHERE garmin_activity_id IS NULL AND sport_group = ? "
+        # An intervals row may carry a foreign id (Zwift external_id) in garmin_activity_id.
+        "SELECT id, fit_path FROM activity WHERE (garmin_activity_id IS NULL"
+        " OR (source = 'intervals' AND garmin_activity_id != ?)) AND sport_group = ? "
         "AND abs(julianday(start_utc) - julianday(?)) * 86400 <= ? "
         "ORDER BY abs(julianday(start_utc) - julianday(?)) LIMIT 1",
-        (row["sport_group"], row["start_utc"], MATCH_TOLERANCE_S, row["start_utc"]),
+        (row["garmin_activity_id"], row["sport_group"], row["start_utc"], MATCH_TOLERANCE_S,
+         row["start_utc"]),
     ).fetchone()
 
 

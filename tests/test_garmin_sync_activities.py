@@ -135,6 +135,22 @@ def test_intervals_row_without_garmin_id_matched_by_time(conn, tmp_path):
     assert q(conn, "SELECT count(*) FROM activity_lap WHERE activity_id = ?", (act_id,))[0][0] == 2
 
 
+def test_intervals_row_with_zwift_id_matched_by_time(conn, tmp_path):
+    # intervals stores a Zwift ride's external_id in garmin_activity_id; it is not a Garmin id.
+    act_id = intervals_row(conn, gid=2265399032824266800, start="2026-11-14T09:02:00Z")
+    res = run(conn, FakeGarmin([summary()]), tmp_path)
+    assert (res["new"], res["updated"]) == (0, 1)
+    assert q(conn, "SELECT id, icu_activity_id, garmin_activity_id, source FROM activity") == [
+        (act_id, "i9", GID, "garmin_api")]
+
+
+def test_garmin_row_with_other_id_not_matched_by_time(conn, tmp_path):
+    run(conn, FakeGarmin([summary()]), tmp_path)
+    other = summary(gid=GID + 5, start="2026-11-14 09:01:00")
+    assert run(conn, FakeGarmin([other]), tmp_path)["new"] == 1
+    assert q(conn, "SELECT count(*) FROM activity")[0][0] == 2
+
+
 def test_intervals_row_outside_tolerance_not_matched(conn, tmp_path):
     intervals_row(conn, start="2026-11-14T09:10:00Z")
     assert run(conn, FakeGarmin([summary()]), tmp_path)["new"] == 1
