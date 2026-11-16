@@ -24,8 +24,8 @@ from coach.integrations.intervals import IntervalsError
 from coach.mcp.format import Clock, Result, error, utc_now, written
 from coach.plan import month as month_plan
 from coach.plan.reconcile import EventsClient, reconcile
-from coach.store import logs, plan_ops
-from coach.store.db import connect_write, fetch_all, fetch_one, today_local
+from coach.store import logs, plan_ops, thresholds
+from coach.store.db import connect_write, fetch_all, fetch_one, today_local, transaction
 
 ACTOR = "claude"
 LOGGING = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -141,6 +141,30 @@ def register(mcp: FastMCP, db_path: Path | str, *, client_factory: ClientFactory
         extra = f" ({res.message})" if res.status == "replaced" else ""
         return written(f"{what} {res.row['kg']} kg for {day}{extra}{mean_txt}", status=res.status,
                        weight=res.row, previous=res.previous, flags=res.flags, mean_7d=mean, audit_id=res.audit_id)
+
+    @mcp.tool(annotations=LOGGING)
+    def set_athlete_settings(ftp_w: float | None = None, weight_kg: float | None = None,
+                             effective_from: str | None = None, note: str | None = None,
+                             client_ref: str | None = None) -> Result:
+        """Set Lapo's FTP (W) and/or weight (kg) from effective_from (default today); overrides the device values for IF, TSS, zones and W/kg."""
+        values = {k: v for k, v in (("ftp_w", ftp_w), ("weight_kg", weight_kg)) if v is not None}
+        if not values:
+            return error("give ftp_w and/or weight_kg")
+        day = effective_from or today().isoformat()
+        saved: dict[str, Any] = {}
+        with db() as conn:
+            try:
+                with transaction(conn):
+                    for kind, value in values.items():
+                        saved[kind] = thresholds.set_threshold(conn, kind=kind, value=value, effective_from=day,
+                                                               note=note, actor=ACTOR)
+            except ValueError as exc:
+                return error(str(exc))
+        parts = ", ".join(f"{k} {r.row['value']:g}" for k, r in saved.items() if r.row)
+        return written(f"Set {parts} from {day}", status="saved",
+                       settings={k: r.row for k, r in saved.items()},
+                       previous={k: r.previous for k, r in saved.items()},
+                       audit_ids={k: r.audit_id for k, r in saved.items()})
 
     @mcp.tool(annotations=LOGGING)
     def add_note(text: str, tags: list[str] | None = None, local_date: str | None = None,

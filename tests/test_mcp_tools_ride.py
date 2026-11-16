@@ -16,6 +16,7 @@ from coach.db.migrate import migrate
 from coach.ingest import garmin_sync as gs
 from coach.integrations.garmin import GarminError
 from coach.mcp import tools_ride
+from coach.store import thresholds
 from coach.store.db import connect_write
 from tests.test_garmin_sync_activities import D0, D1, GID, FakeGarmin, summary
 
@@ -251,6 +252,28 @@ async def test_athlete_settings_from_ride_and_stale_hint(ride: tuple[Path, int])
     assert before["settings"]["ftp_w"]["source"] != "garmin_fit"
     assert "error" in await call(path, "get_athlete_settings", date="nope")
 
+
+
+@pytest.mark.anyio
+async def test_athlete_settings_manual_beats_fit_and_drives_hint(ride: tuple[Path, int]) -> None:
+    path, act_id = ride
+    conn = connect_write(path)
+    conn.execute("UPDATE activity SET ftp_used = 150, weight_kg_used = 75 WHERE id = ?", (act_id,))
+    conn.execute("INSERT OR REPLACE INTO activity_power_best (activity_id, duration_s, watts) VALUES (?, 1200, 200)",
+                 (act_id,))
+    thresholds.set_threshold(conn, kind="ftp_w", value=190, effective_from="2026-11-01")
+    thresholds.set_threshold(conn, kind="weight_kg", value=72, effective_from="2026-11-01")
+    thresholds.set_threshold(conn, kind="ftp_w", value=210, effective_from="2026-12-01")
+    conn.commit()
+    conn.close()
+    out = await call(path, "get_athlete_settings")
+    ftp = out["settings"]["ftp_w"]
+    assert ftp["value"] == 190 and ftp["source"] == "manual" and ftp["effective_from"] == "2026-11-01"
+    assert ftp["garmin_value"] == 150
+    assert out["settings"]["weight_kg"]["value"] == 72 and out["settings"]["weight_kg"]["garmin_value"] == 75
+    assert out["ftp_hint"] is None  # 200 * 0.95 = 190 is not above the manual 190
+    early = await call(path, "get_athlete_settings", date="2026-10-31")
+    assert early["settings"]["ftp_w"]["source"] != "manual"
 
 # sync_now
 

@@ -14,6 +14,7 @@ from fastmcp import Client, FastMCP
 from coach.db.migrate import migrate
 from coach.mcp import tools_write
 from coach.plan.reconcile import reconcile
+from coach.store import thresholds
 from coach.store.db import connect_write
 from tests.store_helpers import TODAY, add_session, session
 from tests.test_reconcile import FakeClient
@@ -212,7 +213,8 @@ async def test_save_month_plan_summary_includes_warnings(db: tuple[Path, sqlite3
 async def test_tool_listing_annotations_match_ktd6(db: tuple[Path, sqlite3.Connection]) -> None:
     path, _ = db
     tools = {t.name: t for t in await server(path).list_tools()}
-    logging = {"log_meal", "log_weight", "add_note", "log_supplement", "set_supplement", "save_weekly_review"}
+    logging = {"log_meal", "log_weight", "add_note", "log_supplement", "set_supplement", "save_weekly_review",
+               "set_athlete_settings"}
     plan = {"move_session", "skip_session", "swap_sessions", "save_month_plan", "undo_change"}
     assert set(tools) == logging | plan
     for name, tool in tools.items():
@@ -228,3 +230,36 @@ async def test_tool_listing_annotations_match_ktd6(db: tuple[Path, sqlite3.Conne
         assert "ask Lapo" in (tools[name].description or ""), name
     assert "lock=true only when Lapo says" in (tools["move_session"].description or "")
     assert (tools["save_month_plan"].description or "").count("- ") >= 3
+
+
+@pytest.mark.anyio
+async def test_set_athlete_settings_saves_and_undoes(db: tuple[Path, sqlite3.Connection], fake: FakeClient) -> None:
+    path, _ = db
+    out = await call(path, "set_athlete_settings", fake, ftp_w=185, weight_kg=72, effective_from="2026-11-01")
+    assert out["status"] == "saved" and out["settings"]["ftp_w"]["value"] == 185
+    upd = await call(path, "set_athlete_settings", fake, ftp_w=190, effective_from="2026-11-01", note="coach")
+    assert upd["previous"]["ftp_w"]["value"] == 185
+    assert (await call(path, "undo_change", fake, audit_id=upd["audit_ids"]["ftp_w"]))["status"] == "undone"
+    check = fresh(path)
+    assert thresholds.effective(check, "2026-11-06")["ftp_w"]["value"] == 185
+    check.close()
+    assert (await call(path, "undo_change", fake, audit_id=out["audit_ids"]["ftp_w"]))["status"] == "undone"
+    check = fresh(path)
+    eff = thresholds.effective(check, "2026-11-06")
+    check.close()
+    assert "ftp_w" not in eff and eff["weight_kg"]["value"] == 72
+
+
+@pytest.mark.anyio
+async def test_set_athlete_settings_defaults_and_validation(db: tuple[Path, sqlite3.Connection],
+                                                           fake: FakeClient) -> None:
+    path, _ = db
+    assert "error" in await call(path, "set_athlete_settings", fake)
+    assert "error" in await call(path, "set_athlete_settings", fake, ftp_w=600)
+    bad = await call(path, "set_athlete_settings", fake, ftp_w=190, weight_kg=20)
+    assert "error" in bad
+    check = fresh(path)
+    assert thresholds.effective(check, DAY) == {}
+    check.close()
+    ok = await call(path, "set_athlete_settings", fake, ftp_w=190)
+    assert ok["settings"]["ftp_w"]["effective_from"] == DAY

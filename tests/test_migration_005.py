@@ -41,7 +41,7 @@ def test_db_at_004_with_activity_migrates_intact(tmp_path, monkeypatch):
     migrate(conn)
     _activity(conn)
     conn.commit()
-    monkeypatch.setattr(m, "migrations", lambda: real)
+    monkeypatch.setattr(m, "migrations", lambda: [x for x in real if x[0] <= 5])
     assert migrate(conn) == ["005_garmin_direct.sql"]
     row = conn.execute("SELECT garmin_activity_id, source, tss, fit_path FROM activity").fetchone()
     assert row == (25074559291, "intervals", None, None)

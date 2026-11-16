@@ -33,6 +33,7 @@ ENTITY_PK: dict[str, str] = {
     "supplement": "id",
     "supplement_intake": "id",
     "weekly_review": "week_start",
+    "athlete_threshold": "id",
 }
 
 SESSION_BOOKKEEPING = frozenset({

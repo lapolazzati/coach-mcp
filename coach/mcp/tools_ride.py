@@ -36,6 +36,7 @@ from coach.mcp.format import (
     utc_now,
     written,
 )
+from coach.store import thresholds
 from coach.store.db import Row, connect_write, fetch_all, fetch_one, today_local
 from coach.store.sync import get_state, set_state
 
@@ -94,9 +95,17 @@ def _zones(conn: sqlite3.Connection, act_id: int) -> list[Row]:
                      " WHERE activity_id = ? ORDER BY kind, zone", (act_id,))
 
 
+def _day_of(act: Row) -> str:
+    return str(act.get("start_local") or act["start_utc"])[:10]
+
+
 def _weight(conn: sqlite3.Connection, act: Row) -> float | None:
+    """Manual weight effective on the ride date, else the FIT value, else the athlete profile."""
+    manual = thresholds.effective(conn, _day_of(act)).get("weight_kg")
+    if manual:
+        return float(manual["value"])
     if act.get("weight_kg_used"):
-        return act["weight_kg_used"]
+        return float(act["weight_kg_used"])
     row = fetch_one(conn, "SELECT weight_kg FROM athlete ORDER BY id LIMIT 1")
     return row["weight_kg"] if row else None
 
@@ -162,6 +171,10 @@ def athlete_settings(conn: sqlite3.Connection, day: date) -> Result:
             settings[name] = {"value": fallback[profile_key], "source": "athlete_profile"}
         else:
             settings[name] = {"value": None, "source": None}
+    for name, row in thresholds.effective(conn, day).items():
+        garmin = settings[name]["value"] if settings[name]["source"] == "garmin_fit" else None
+        settings[name] = {"value": row["value"], "source": "manual", "effective_from": row["effective_from"],
+                          "note": row["note"], "garmin_value": garmin}
     since = day - timedelta(days=FTP_WINDOW_DAYS - 1)
     (best,) = conn.execute(
         f"SELECT max(b.watts) FROM activity_power_best b JOIN activity a ON a.id = b.activity_id"
