@@ -16,6 +16,8 @@ from typing import Any, NamedTuple
 from coach.ingest.garmin_export import PAUSE_GAP_S
 
 NP_WINDOW_S = 30
+DRIFT_MIN_S = 600  # below this much pedalling, Pa:HR decoupling is noise
+DRIFT_SHORT_NOTE = "<10 min pedalling"
 SEGMENT_BY = ("time", "distance", "altitude", "lap")
 
 # field -> (accepted mapping keys, FitRide tuple index)
@@ -107,6 +109,25 @@ def work_kj(stream: Iterable[Any]) -> float | None:
     return _work_kj(_samples(stream))
 
 
+def _power_summary(samples: Sequence[Sample]) -> dict[str, float | None]:
+    powers = [s.power for s in samples if s.power is not None]
+    if not powers:
+        return {"avg_power": None, "avg_power_nonzero": None, "coasting_pct": None}
+    pedalling = [p for p in powers if p > 0]
+    return {
+        # dropouts and coasting count as 0 W over moving time (pauses excluded), like NP
+        "avg_power": _r(sum(powers) / _moving_s(samples)),
+        "avg_power_nonzero": _r(sum(pedalling) / len(pedalling)) if pedalling else None,
+        "coasting_pct": _r(100 * (len(powers) - len(pedalling)) / len(powers)),
+    }
+
+
+def power_summary(stream: Iterable[Any]) -> dict[str, float | None]:
+    """True average power (coasting and dropouts as 0 W over moving time), the average of
+    pedalling seconds only (what Garmin calls avg power), and the share of 0 W seconds."""
+    return _power_summary(_samples(stream))
+
+
 def _in_zone(value: float, low: float | None, high: float | None) -> bool:
     return (low is None or value > low) and (high is None or value <= high)
 
@@ -129,23 +150,23 @@ def zone_time(stream: Iterable[Any], zones: Iterable[Any]) -> list[dict[str, Any
 
 
 def _drift(samples: Sequence[Sample]) -> float | None:
-    with_hr = [s for s in samples if s.hr]
-    half = len(with_hr) // 2
-    if half == 0:
+    pedalling = [s for s in samples if s.power and s.hr]
+    if len(pedalling) < DRIFT_MIN_S:
         return None
+    half = len(pedalling) // 2
     ratios = []
-    for part in (with_hr[:half], with_hr[half:]):
-        power = sum(s.power or 0 for s in part) / len(part)
-        hr = sum(s.hr for s in part if s.hr) / len(part)
-        ratios.append(power / hr)
+    for part in (pedalling[:half], pedalling[half:]):
+        ratios.append(sum(s.power or 0 for s in part) / sum(s.hr or 0 for s in part))
     first, second = ratios
-    if first == 0:
-        return None
     return (first - second) / first * 100
 
 
 def drift(stream: Iterable[Any]) -> float | None:
-    """Pa:HR decoupling in %: (P/HR first half - second half) / first half."""
+    """Pa:HR decoupling in %: (P/HR first half - second half) / first half.
+
+    Uses pedalling seconds only (power > 0 and hr), split in half by pedalling time, so
+    descents do not fake a drift. None with less than DRIFT_MIN_S of pedalling.
+    """
     return _drift(_samples(stream))
 
 
@@ -202,7 +223,7 @@ def _r(value: float | None) -> float | None:
 
 
 def segment(stream: Iterable[Any], by: str, from_: float, to: float, above_w: float | None = None,
-            zones: Iterable[Any] | None = None, weight_kg: float | None = None,
+            above_hr: float | None = None, zones: Iterable[Any] | None = None, weight_kg: float | None = None,
             laps: Sequence[Any] | None = None) -> dict[str, Any]:
     """Stats for a slice of the ride.
 
@@ -210,6 +231,9 @@ def segment(stream: Iterable[Any], by: str, from_: float, to: float, above_w: fl
     first after it at >= to m. by='altitude': first crossing of from_ m, then the first crossing
     of to m after it. by='lap': laps from_..to inclusive (0-based idx; needs ``laps`` rows with
     ``idx, start_s``). Raises ValueError on an empty or invalid range.
+
+    avg_power counts coasting as 0 W; avg_power_nonzero skips it. above_w / above_hr give
+    seconds and % strictly above each threshold.
     """
     if by not in SEGMENT_BY:
         raise ValueError(f"by must be one of {SEGMENT_BY}, got {by!r}")
@@ -231,7 +255,11 @@ def segment(stream: Iterable[Any], by: str, from_: float, to: float, above_w: fl
     duration_s = _moving_s(sel)
     powers = [s.power for s in sel if s.power is not None]
     hrs = [s.hr for s in sel if s.hr is not None]
-    avg_power = sum(powers) / len(powers) if powers else None
+    summary = _power_summary(sel)
+    avg_power = summary["avg_power"]
+    s_above_w = sum(1 for p in powers if p > above_w) if above_w is not None and powers else None
+    s_above_hr = sum(1 for h in hrs if h > above_hr) if above_hr is not None and hrs else None
+    drift_pct = _drift(sel)
     return {
         "by": by,
         "start_s": t0,
@@ -240,7 +268,9 @@ def segment(stream: Iterable[Any], by: str, from_: float, to: float, above_w: fl
         "duration_s": duration_s,
         "distance_m": _r(distance_m),
         "gain_m": _r(gain_m),
-        "avg_power": _r(avg_power),
+        "avg_power": avg_power,
+        "avg_power_nonzero": summary["avg_power_nonzero"],
+        "coasting_pct": summary["coasting_pct"],
         "np": _r(_np(sel)),
         "work_kj": _r(_work_kj(sel)),
         "w_per_kg": _r(avg_power / weight_kg) if avg_power is not None and weight_kg else None,
@@ -248,7 +278,10 @@ def segment(stream: Iterable[Any], by: str, from_: float, to: float, above_w: fl
         "avg_hr": _r(sum(hrs) / len(hrs)) if hrs else None,
         "max_hr": max(hrs) if hrs else None,
         "zone_time": _zone_time(sel, zones) if zones is not None else None,
-        "pct_above_w": _r(100 * sum(1 for p in powers if p > above_w) / len(powers))
-        if above_w is not None and powers else None,
-        "drift": _r(_drift(sel)),
+        "s_above_w": s_above_w,
+        "pct_above_w": _r(100 * s_above_w / len(powers)) if s_above_w is not None else None,
+        "s_above_hr": s_above_hr,
+        "pct_above_hr": _r(100 * s_above_hr / len(hrs)) if s_above_hr is not None else None,
+        "drift": _r(drift_pct),
+        "drift_note": DRIFT_SHORT_NOTE if drift_pct is None and hrs and powers else None,
     }

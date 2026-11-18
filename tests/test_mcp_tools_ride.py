@@ -86,6 +86,12 @@ async def test_get_activity_detail(ride: tuple[Path, int]) -> None:
     assert out["activity"]["garmin_activity_id"] == GID
     assert out["garmin"]["tss"] == 25.0 and out["garmin"]["intensity_factor"] == 0.8
     assert out["computed"]["np"] > 0 and out["computed"]["work_kj"] > 0
+    computed = out["computed"]
+    assert computed["avg_power"] <= computed["avg_power_nonzero"]
+    assert 0 <= computed["coasting_pct"] <= 100
+    assert {"drift_pct", "drift_note"} <= set(computed)
+    # Garmin's avg skips 0 W seconds: labelled so it is not read as the true average
+    assert out["activity"]["avg_power_garmin_nonzero"] == 150 and "avg_power" not in out["activity"]
     assert [lap["idx"] for lap in out["laps"]] == [0, 1] and out["laps_total"] == 2
     assert out["stream_points"] > 0
     assert "raw_json" not in out["activity"]
@@ -126,7 +132,16 @@ async def test_analyze_segment_time(ride: tuple[Path, int]) -> None:
     seg = out["segment"]
     assert seg["avg_power"] == pytest.approx(200, abs=1)
     assert seg["pct_above_w"] == pytest.approx(100, abs=1)
+    assert seg["s_above_w"] > 0 and seg["pct_above_hr"] is None
     assert size(out) < MAX_DEFAULT_CHARS
+
+
+@pytest.mark.anyio
+async def test_analyze_segment_above_hr(ride: tuple[Path, int]) -> None:
+    path, act_id = ride
+    seg = (await call(path, "analyze_segment", id=act_id, by="time", from_=0, to=60, above_hr=0))["segment"]
+    assert seg["pct_above_hr"] == pytest.approx(100) and seg["s_above_hr"] > 0
+    assert seg["drift"] is None and seg["drift_note"] == "<10 min pedalling"
 
 
 @pytest.mark.anyio

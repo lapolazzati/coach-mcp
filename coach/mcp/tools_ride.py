@@ -125,11 +125,14 @@ def activity_detail(conn: sqlite3.Connection, act: Row) -> Result:
     for z in _zones(conn, act["id"]):
         zone_time.setdefault(z["kind"], []).append(
             {"zone": z["zone"], "seconds": z["seconds"], "low": z["low"], "high": z["high"]})
+    summary = {k: act[k] for k in (
+        "id", "garmin_activity_id", "icu_activity_id", "source", "sport", "indoor", "name", "start_local",
+        "duration_s", "moving_s", "elapsed_s", "distance_m", "elevation_gain_m", "avg_speed_mps",
+        "avg_power", "max_power", "avg_hr", "max_hr", "avg_cadence", "calories")}
+    # Garmin's avg power skips 0 W seconds; the true average is computed.avg_power
+    summary["avg_power_garmin_nonzero"] = summary.pop("avg_power")
     out: Result = {
-        "activity": _compact({k: act[k] for k in (
-            "id", "garmin_activity_id", "icu_activity_id", "source", "sport", "indoor", "name", "start_local",
-            "duration_s", "moving_s", "elapsed_s", "distance_m", "elevation_gain_m", "avg_speed_mps",
-            "avg_power", "max_power", "avg_hr", "max_hr", "avg_cadence", "calories")}),
+        "activity": _compact(summary),
         "garmin": _compact({k: act[k] for k in (
             "norm_power", "intensity_factor", "tss", "training_load", "aerobic_te", "anaerobic_te",
             "max_20min_power", "work_kj")}),
@@ -141,10 +144,13 @@ def activity_detail(conn: sqlite3.Connection, act: Row) -> Result:
         "zone_time": zone_time,
     }
     if stream:
+        drift_pct = ride.drift(stream)
         out["computed"] = {
             "np": _r(ride.np(stream)),
             "work_kj": _r(ride.work_kj(stream)),
-            "drift_pct": _r(ride.drift(stream)),
+            **ride.power_summary(stream),
+            "drift_pct": _r(drift_pct),
+            "drift_note": ride.DRIFT_SHORT_NOTE if drift_pct is None else None,
         }
     else:
         out["note"] = "no FIT stream stored yet: computed metrics, laps and segments need it (try sync_now)"
@@ -337,7 +343,11 @@ def register(mcp: FastMCP, db_path: Path | str, *, garmin_factory: Factory | Non
     @mcp.tool(annotations=READ_ONLY)
     def get_activity(id: int | str, id_kind: IdKind = "internal") -> Result:
         """One ride in detail: summary, Garmin metrics (NP, IF, TSS), computed metrics from the
-        stream (np, work_kj, drift_pct), thresholds used, laps and time in zones.
+        stream, thresholds used, laps and time in zones.
+
+        computed.avg_power is the true average (coasting counts as 0 W over moving time);
+        avg_power_nonzero and activity.avg_power_garmin_nonzero skip 0 W seconds. drift_pct is
+        Pa:HR decoupling over pedalling seconds only (null under 10 min of pedalling).
 
         id_kind: 'internal' (coach id, default), 'garmin' (Garmin activity id) or 'icu'.
         """
@@ -347,9 +357,11 @@ def register(mcp: FastMCP, db_path: Path | str, *, garmin_factory: Factory | Non
 
     @mcp.tool(annotations=READ_ONLY)
     def analyze_segment(id: int | str, by: str, from_: float, to: float, above_w: float | None = None,
-                        id_kind: IdKind = "internal") -> Result:
-        """Stats for part of a ride: duration, distance, gain, avg/NP power, W/kg, VAM, HR,
-        zone time, % above `above_w`, drift.
+                        above_hr: float | None = None, id_kind: IdKind = "internal") -> Result:
+        """Stats for part of a ride: duration, distance, gain, avg/NP power (avg counts coasting
+        as 0 W; avg_power_nonzero and coasting_pct too), W/kg, VAM, HR, zone time, seconds and %
+        strictly above `above_w` (W) and `above_hr` (bpm), drift over pedalling seconds (null
+        with drift_note under 10 min of pedalling).
 
         by='time' (seconds from start, [from_, to)), 'distance' (metres), 'altitude' (first
         crossing of from_ m, then of to m: a climb) or 'lap' (0-based lap indexes, inclusive).
@@ -362,7 +374,8 @@ def register(mcp: FastMCP, db_path: Path | str, *, garmin_factory: Factory | Non
             if not stream:
                 return error("no FIT stream stored for this ride yet; try sync_now")
             try:
-                seg = ride.segment(stream, by, from_, to, above_w=above_w, zones=_zones(conn, act["id"]),
+                seg = ride.segment(stream, by, from_, to, above_w=above_w, above_hr=above_hr,
+                                   zones=_zones(conn, act["id"]),
                                    weight_kg=_weight(conn, act), laps=_laps(conn, act["id"]))
             except ValueError as exc:
                 return error(str(exc))

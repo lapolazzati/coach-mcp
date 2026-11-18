@@ -4,7 +4,15 @@ import sqlite3
 
 import pytest
 
-from coach.analysis.ride import drift, np, segment, work_kj, zone_time
+from coach.analysis.ride import (
+    DRIFT_MIN_S,
+    drift,
+    np,
+    power_summary,
+    segment,
+    work_kj,
+    zone_time,
+)
 
 
 def rec(t, power=None, hr=None, speed=None, distance=None, altitude=None):
@@ -99,20 +107,48 @@ def test_zone_time_power_bounds_are_low_exclusive_high_inclusive():
     assert [r["seconds"] for r in rows] == [1, 2, 1]
 
 
+# 300 s at 200 W, 100 s coasting (0 W), 1 s dropout (None), 99 s at 200 W
+COASTY = steady(200, 300) + steady(0, 100, start=300) + [rec(400, None, 140)] + steady(200, 99, start=401)
+
+
+@pytest.mark.parametrize(("stream", "expected"), [
+    (steady(200, 100), {"avg_power": 200.0, "avg_power_nonzero": 200.0, "coasting_pct": 0.0}),
+    # true avg counts coasting and dropouts as 0 W over moving time; nonzero skips both
+    (COASTY, {"avg_power": 200 * 399 / 500, "avg_power_nonzero": 200.0, "coasting_pct": 20.0}),
+    (PAUSED, {"avg_power": 200.0, "avg_power_nonzero": 200.0, "coasting_pct": 0.0}),  # pause is not moving
+    ([rec(i) for i in range(10)], {"avg_power": None, "avg_power_nonzero": None, "coasting_pct": None}),
+    ([], {"avg_power": None, "avg_power_nonzero": None, "coasting_pct": None}),
+], ids=["steady", "coasting-and-none", "pause", "no-power", "empty"])
+def test_power_summary(stream, expected):
+    result = power_summary(stream)
+    for key, value in expected.items():
+        assert result[key] == (None if value is None else pytest.approx(value, abs=0.05)), key
+
+
+# pedalling 200 W @ 140 bpm, then pedalling 200 W @ 150 bpm; long 0 W descents in the second half
+# would fake a big drift if coasting counted
+DESCENT = (steady(200, 600, hr=140) + steady(0, 600, start=600, hr=110)
+           + steady(200, 600, start=1200, hr=150))
+
+
 @pytest.mark.parametrize(("stream", "expected"), [
     (steady(200, 600, hr=140), 0.0),
+    (DESCENT, (200 / 140 - 200 / 150) / (200 / 140) * 100),
+    (steady(200, DRIFT_MIN_S - 1, hr=140) + steady(0, 600, start=DRIFT_MIN_S, hr=140), None),  # <10 min pedalling
     (steady(200, 300, hr=140) + steady(200, 300, start=300, hr=150), (200 / 140 - 200 / 150) / (200 / 140) * 100),
     (steady(200, 300, hr=150) + steady(200, 300, start=300, hr=140), (200 / 150 - 200 / 140) / (200 / 150) * 100),
     ([rec(i, 200) for i in range(600)], None),  # no HR
     (steady(200, 1), None),
-])
+], ids=["steady", "descent-ignored", "short-pedalling", "half-up", "half-down", "no-hr", "one-sample"])
 def test_drift(stream, expected):
     result = drift(stream)
     assert result == (None if expected is None else pytest.approx(expected, abs=0.05))
 
 
 CLIMB = {"duration_s": 200, "distance_m": 2000.0, "gain_m": 100.0, "avg_power": 300.0, "np": 300.0,
-         "w_per_kg": 4.0, "vam": 1800.0, "avg_hr": 160.0, "max_hr": 160, "pct_above_w": 100.0, "drift": 0.0}
+         "w_per_kg": 4.0, "vam": 1800.0, "avg_hr": 160.0, "max_hr": 160, "pct_above_w": 100.0,
+         "s_above_w": 200, "pct_above_hr": 100.0, "s_above_hr": 200, "avg_power_nonzero": 300.0,
+         "coasting_pct": 0.0}
 
 
 @pytest.mark.parametrize(("by", "from_", "to", "expected"), [
@@ -122,15 +158,17 @@ CLIMB = {"duration_s": 200, "distance_m": 2000.0, "gain_m": 100.0, "avg_power": 
     ("distance", 2000, 4000, CLIMB),
     ("lap", 1, 1, CLIMB),
     ("lap", 1, 2, {"duration_s": 400, "avg_power": 200.0, "distance_m": 3990.0}),  # ends at the last record
-    ("altitude", 120, 180, {**CLIMB, "duration_s": 120, "distance_m": 1200.0, "gain_m": 60.0}),
+    ("altitude", 120, 180, {**CLIMB, "duration_s": 120, "distance_m": 1200.0, "gain_m": 60.0,
+                            "s_above_w": 120, "s_above_hr": 120}),
     # first crossing of 190 is on the climb (t=380), then 150 on the way down (t=500)
     ("altitude", 190, 150, {"duration_s": 120, "gain_m": 10.0, "distance_m": 1200.0}),
 ])
 def test_segment(by, from_, to, expected):
-    result = segment(ride(), by, from_, to, above_w=250, zones=POWER_ZONES, weight_kg=75, laps=LAPS)
+    result = segment(ride(), by, from_, to, above_w=250, above_hr=150, zones=POWER_ZONES, weight_kg=75, laps=LAPS)
     for key, value in expected.items():
         assert result[key] == pytest.approx(value), key
-    assert set(CLIMB) | {"zone_time"} <= set(result)
+    assert set(CLIMB) | {"zone_time", "drift", "drift_note"} <= set(result)
+    assert result["drift"] is None and result["drift_note"] == "<10 min pedalling"
 
 
 def test_segment_zone_time_and_optional_fields():
@@ -140,6 +178,19 @@ def test_segment_zone_time_and_optional_fields():
     assert bare["zone_time"] is None
     assert bare["pct_above_w"] is None
     assert bare["w_per_kg"] is None
+    assert bare["pct_above_hr"] is None and bare["s_above_hr"] is None
+
+
+def test_segment_above_thresholds_are_strict_and_drift_on_long_segment():
+    # 50 s at 150 bpm (not above 150), 50 s at 151; 200 W then 201 W
+    stream = steady(200, 50, hr=150) + steady(201, 50, start=50, hr=151)
+    result = segment(stream, "time", 0, 100, above_w=200, above_hr=150)
+    assert (result["s_above_w"], result["pct_above_w"]) == (50, 50.0)
+    assert (result["s_above_hr"], result["pct_above_hr"]) == (50, 50.0)
+    long = segment(DESCENT, "time", 0, 1800)
+    assert long["drift"] == pytest.approx((200 / 140 - 200 / 150) / (200 / 140) * 100, abs=0.05)
+    assert long["drift_note"] is None
+    assert long["coasting_pct"] == pytest.approx(100 / 3, abs=0.05)
 
 
 def test_segment_excludes_pause_from_duration():
