@@ -6,7 +6,10 @@ import pytest
 
 from coach.analysis.ride import (
     DRIFT_MIN_S,
+    coggan_zones,
     drift,
+    intensity,
+    moving_s,
     np,
     power_summary,
     segment,
@@ -231,3 +234,40 @@ def test_segment_accepts_db_rows():
 def test_segment_invalid(stream, by, from_, to, laps, match):
     with pytest.raises(ValueError, match=match):
         segment(stream, by, from_, to, laps=laps)
+
+
+# Coggan power zones and IF/TSS on a given FTP
+
+
+def test_coggan_zones_bounds():
+    zones = coggan_zones(200)
+    assert [z["zone"] for z in zones] == [1, 2, 3, 4, 5, 6, 7]
+    assert all(z["kind"] == "power" for z in zones)
+    assert [(z["low"], z["high"]) for z in zones] == [
+        (None, 110), (110, 150), (150, 180), (180, 210), (210, 240), (240, 300), (300, None)]
+
+
+def test_coggan_zone_time_counts_zero_and_boundaries():
+    stream = [rec(0, 0), rec(1, 110), rec(2, 111), rec(3, 300), rec(4, 301), rec(5, None)]
+    seconds = {z["zone"]: z["seconds"] for z in zone_time(stream, coggan_zones(200))}
+    assert seconds == {1: 2, 2: 1, 3: 0, 4: 0, 5: 0, 6: 1, 7: 1}
+
+
+@pytest.mark.parametrize(("np_w", "ftp", "seconds", "expected"), [
+    (200, 200, 3600, (1.0, 100.0)),
+    (178.8, 190, 6419, (0.94, 157.9)),
+    (100, 200, 1800, (0.5, 12.5)),
+])
+def test_intensity(np_w, ftp, seconds, expected):
+    if_, tss = intensity(np_w, ftp, seconds)
+    assert (round(if_, 2), round(tss, 1)) == expected
+
+
+def test_intensity_missing_inputs():
+    assert intensity(None, 200, 3600) == (None, None)
+    assert intensity(200, None, 3600) == (None, None)
+    assert intensity(200, 200, None) == (1.0, None)
+
+
+def test_moving_s_excludes_pauses():
+    assert moving_s(steady(100, 60) + steady(100, 60, start=600)) == 120

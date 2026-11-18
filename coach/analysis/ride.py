@@ -19,6 +19,7 @@ NP_WINDOW_S = 30
 DRIFT_MIN_S = 600  # below this much pedalling, Pa:HR decoupling is noise
 DRIFT_SHORT_NOTE = "<10 min pedalling"
 SEGMENT_BY = ("time", "distance", "altitude", "lap")
+COGGAN_BOUNDS = (0.55, 0.75, 0.90, 1.05, 1.20, 1.50)  # upper bounds of Z1..Z6 as a share of FTP
 
 # field -> (accepted mapping keys, FitRide tuple index)
 _FIELDS = {
@@ -69,6 +70,11 @@ def _runs(samples: Sequence[Sample]) -> list[list[Sample]]:
 
 def _moving_s(samples: Sequence[Sample]) -> int:
     return int(sum(run[-1].t - run[0].t + 1 for run in _runs(samples)))
+
+
+def moving_s(stream: Iterable[Any]) -> int:
+    """Seconds of moving time: records between pauses, each record = 1 s."""
+    return _moving_s(_samples(stream))
 
 
 def _np(samples: Sequence[Sample]) -> float | None:
@@ -147,6 +153,21 @@ def _zone_time(samples: Sequence[Sample], zones: Iterable[Any]) -> list[dict[str
 def zone_time(stream: Iterable[Any], zones: Iterable[Any]) -> list[dict[str, Any]]:
     """Seconds per zone; zones carry activity_zone_time ``kind, zone, low, high`` (low < v <= high)."""
     return _zone_time(_samples(stream), zones)
+
+
+def coggan_zones(ftp: float) -> list[dict[str, Any]]:
+    """Coggan power zones Z1..Z7 on ``ftp`` (Z1 has no lower bound, so it holds 0 W)."""
+    edges: list[float | None] = [None, *(round(ftp * b, 1) for b in COGGAN_BOUNDS), None]
+    return [{"kind": "power", "zone": i + 1, "low": edges[i], "high": edges[i + 1]} for i in range(7)]
+
+
+def intensity(np_w: float | None, ftp: float | None, seconds: float | None) -> tuple[float | None, float | None]:
+    """(IF, TSS): IF = NP / FTP, TSS = t * NP * IF / (FTP * 3600) * 100."""
+    if np_w is None or not ftp:
+        return None, None
+    if_ = np_w / ftp
+    tss = seconds * np_w * if_ / (ftp * 3600) * 100 if seconds is not None else None
+    return if_, tss
 
 
 def _drift(samples: Sequence[Sample]) -> float | None:

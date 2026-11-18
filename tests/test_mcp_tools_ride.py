@@ -119,7 +119,69 @@ async def test_get_activity_without_stream(db: tuple[Path, sqlite3.Connection], 
     path, conn = db
     gs.sync_activities(FakeGarmin([summary()], fit_ok=False), conn, tmp_path / "fit", D0, D1)
     out = await call(path, "get_activity", id=GID, id_kind="garmin")
-    assert out["computed"] is None and "sync_now" in out["note"]
+    assert "sync_now" in out["note"] and out["computed"] is None  # no FIT, so no FTP to work from
+    # no stream: IF/TSS still come from Garmin's norm_power (160) on the effective (manual) FTP
+    thresholds.set_threshold(conn, kind="ftp_w", value=190, effective_from="2000-01-01")
+    conn.commit()
+    computed = (await call(path, "get_activity", id=GID, id_kind="garmin"))["computed"]
+    assert computed["np_source"] == "garmin" and (computed["ftp_w"], computed["ftp_source"]) == (190, "manual")
+    assert computed["if"] == pytest.approx(160 / 190, abs=0.01)
+    assert computed["tss"] == pytest.approx(120 * 160 * (160 / 190) / (190 * 3600) * 100, abs=0.1)
+    assert "power_zone_time" not in computed and "avg_power" not in computed
+
+
+# effective FTP (manual override beats the FIT value)
+
+
+@pytest.mark.anyio
+async def test_get_activity_uses_fit_ftp_by_default(ride: tuple[Path, int]) -> None:
+    path, _ = ride
+    computed = (await call(path, "get_activity", id=GID, id_kind="garmin"))["computed"]
+    assert (computed["ftp_w"], computed["ftp_source"]) == (159, "garmin_fit")
+    assert computed["np_source"] == "stream"
+    assert computed["if"] == pytest.approx(computed["np"] / 159, abs=0.01)
+
+
+@pytest.mark.anyio
+async def test_get_activity_manual_ftp(ride: tuple[Path, int], db: tuple[Path, sqlite3.Connection]) -> None:
+    path, act_id = ride
+    thresholds.set_threshold(db[1], kind="ftp_w", value=190, effective_from="2026-11-01")
+    out = await call(path, "get_activity", id=act_id)
+    computed = out["computed"]
+    assert (computed["ftp_w"], computed["ftp_source"]) == (190, "manual")
+    assert computed["if"] == pytest.approx(computed["np"] / 190, abs=0.01)
+    zones = computed["power_zone_time"]
+    assert [z["zone"] for z in zones] == [1, 2, 3, 4, 5, 6, 7]
+    assert zones[0]["low"] is None and zones[1]["low"] == pytest.approx(0.55 * 190, abs=0.1)
+    assert sum(z["seconds"] for z in zones) == out["stream_points"]
+    # Garmin's own block stays on its own FTP
+    assert out["thresholds"]["ftp_used"] == 159 and out["garmin"]["intensity_factor"] == 0.8
+    assert size(out) < MAX_DEFAULT_CHARS
+
+
+@pytest.mark.anyio
+async def test_get_activity_manual_ftp_after_ride_ignored(ride: tuple[Path, int],
+                                                          db: tuple[Path, sqlite3.Connection]) -> None:
+    path, act_id = ride
+    thresholds.set_threshold(db[1], kind="ftp_w", value=190, effective_from="2026-11-20")
+    computed = (await call(path, "get_activity", id=act_id))["computed"]
+    assert (computed["ftp_w"], computed["ftp_source"]) == (159, "garmin_fit")
+
+
+@pytest.mark.anyio
+async def test_analyze_segment_power_zones_on_manual_ftp(ride: tuple[Path, int],
+                                                         db: tuple[Path, sqlite3.Connection]) -> None:
+    path, act_id = ride
+    thresholds.set_threshold(db[1], kind="ftp_w", value=200, effective_from="2026-11-01")
+    out = await call(path, "analyze_segment", id=act_id, by="time", from_=0, to=60)
+    seg = out["segment"]
+    assert (out["ftp_w"], out["ftp_source"]) == (200, "manual")
+    assert seg["pct_ftp_avg"] == pytest.approx(100, abs=1) and seg["pct_ftp_np"] == pytest.approx(100, abs=1)
+    power = [z for z in seg["zone_time"] if z["kind"] == "power"]
+    assert power[0]["low"] is None and power[3]["low"] == 180 and power[3]["high"] == 210
+    assert sum(z["seconds"] for z in power) == seg["duration_s"]
+    assert any(z["kind"] == "hr" for z in seg["zone_time"])
+    assert size(out) < MAX_DEFAULT_CHARS
 
 
 # analyze_segment

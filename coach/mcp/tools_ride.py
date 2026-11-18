@@ -110,6 +110,19 @@ def _weight(conn: sqlite3.Connection, act: Row) -> float | None:
     return row["weight_kg"] if row else None
 
 
+def _ftp(conn: sqlite3.Connection, act: Row) -> tuple[float | None, str | None]:
+    """FTP effective on the ride date: manual, else the FIT value, else the athlete profile."""
+    manual = thresholds.effective(conn, _day_of(act)).get("ftp_w")
+    if manual:
+        return float(manual["value"]), "manual"
+    if act.get("ftp_used"):
+        return float(act["ftp_used"]), "garmin_fit"
+    row = fetch_one(conn, "SELECT ftp_w FROM athlete ORDER BY id LIMIT 1")
+    if row and row["ftp_w"]:
+        return float(row["ftp_w"]), "athlete_profile"
+    return None, None
+
+
 def _r(value: float | None, digits: int = 1) -> float | None:
     return None if value is None else round(value, digits)
 
@@ -143,17 +156,28 @@ def activity_detail(conn: sqlite3.Connection, act: Row) -> Result:
         "laps_total": len(laps),
         "zone_time": zone_time,
     }
+    ftp, ftp_source = _ftp(conn, act)
     if stream:
+        np_w = ride.np(stream)
+        if_, tss = ride.intensity(np_w, ftp, ride.moving_s(stream))
         drift_pct = ride.drift(stream)
         out["computed"] = {
-            "np": _r(ride.np(stream)),
+            "ftp_w": ftp, "ftp_source": ftp_source,
+            "np": _r(np_w), "np_source": "stream", "if": _r(if_, 2), "tss": _r(tss),
             "work_kj": _r(ride.work_kj(stream)),
             **ride.power_summary(stream),
             "drift_pct": _r(drift_pct),
             "drift_note": ride.DRIFT_SHORT_NOTE if drift_pct is None else None,
+            "power_zone_time": ([{k: z[k] for k in ("zone", "low", "high", "seconds")}
+                                 for z in ride.zone_time(stream, ride.coggan_zones(ftp))] if ftp else None),
         }
     else:
-        out["note"] = "no FIT stream stored yet: computed metrics, laps and segments need it (try sync_now)"
+        out["note"] = "no FIT stream stored yet: stream metrics, laps and segments need it (try sync_now)"
+        np_w = act.get("norm_power")
+        if np_w is not None and ftp:
+            if_, tss = ride.intensity(np_w, ftp, act.get("duration_s"))
+            out["computed"] = {"ftp_w": ftp, "ftp_source": ftp_source, "np": np_w, "np_source": "garmin",
+                               "if": _r(if_, 2), "tss": _r(tss)}
     return out
 
 
@@ -373,13 +397,19 @@ def register(mcp: FastMCP, db_path: Path | str, *, garmin_factory: Factory | Non
             stream = _stream(conn, act["id"])
             if not stream:
                 return error("no FIT stream stored for this ride yet; try sync_now")
+            ftp, ftp_source = _ftp(conn, act)
+            # HR zones as Garmin stored them; power zones are Coggan on the effective FTP
+            zones: list[Any] = [z for z in _zones(conn, act["id"]) if z["kind"] == "hr"]
+            if ftp:
+                zones += ride.coggan_zones(ftp)
             try:
-                seg = ride.segment(stream, by, from_, to, above_w=above_w, above_hr=above_hr,
-                                   zones=_zones(conn, act["id"]),
+                seg = ride.segment(stream, by, from_, to, above_w=above_w, above_hr=above_hr, zones=zones,
                                    weight_kg=_weight(conn, act), laps=_laps(conn, act["id"]))
             except ValueError as exc:
                 return error(str(exc))
-            return reply(conn, {"activity_id": act["id"], "segment": seg})
+            for key, metric in (("pct_ftp_avg", "avg_power"), ("pct_ftp_np", "np")):
+                seg[key] = _r(100 * seg[metric] / ftp) if ftp and seg[metric] is not None else None
+            return reply(conn, {"activity_id": act["id"], "ftp_w": ftp, "ftp_source": ftp_source, "segment": seg})
 
     @mcp.tool(annotations=READ_ONLY)
     def get_power_curve(start: str | None = None, end: str | None = None,
