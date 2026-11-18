@@ -260,9 +260,10 @@
       {% if power %}
       {% set p = power %}
       <dl class="figures">
-        <div><dt>FTP</dt><dd class="num">{{ p.ftp }}<small>W</small></dd></div>
+        <div><dt>FTP <small class="muted">{{ 'set manually' if p.ftp_source == 'manual' else 'est. 95% of best 20 min' }}</small></dt><dd class="num">{{ p.ftp }}<small>W</small></dd></div>
         <div><dt>W/kg</dt><dd class="num">{{ '%.2f'|format(p.wkg) }}</dd></div>
       </dl>
+      {% if p.curve %}
       <table class="table">
         <thead><tr><th scope="col">Best</th><th scope="col">Last 6 wks</th><th scope="col">6 wks before</th><th scope="col">Change</th></tr></thead>
         <tbody>
@@ -271,6 +272,7 @@
           {% endfor %}
         </tbody>
       </table>
+      {% endif %}
       {% else %}
       <p class="empty">Power curve appears once rides with a power meter or Zwift sync.</p>
       {% endif %}

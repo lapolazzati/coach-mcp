@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from store_helpers import add_session
 
 from coach.ingest.garmin_export import ensure_schema
-from coach.store import derived, logs, plan_ops
+from coach.store import derived, logs, plan_ops, thresholds
 from coach.web.app import create_app
 from coach.web.context import build_context
 from coach.web.env import build_env
@@ -160,8 +160,25 @@ def test_power_from_bests_and_ftp_estimate(db):
     power = build_context(db, TODAY)["power"]
     assert power["curve"] == [{"dur": "5s", "now": 800, "prev": 760}, {"dur": "1m", "now": 400, "prev": 390},
                               {"dur": "20m", "now": 220, "prev": 210}]
-    assert power["ftp"] == 209
+    assert power["ftp"] == 209 and power["ftp_source"] == "estimate"
     assert power["wkg"] == round(209 / 82.0, 2)
+
+
+def test_power_uses_manual_ftp_over_estimate(db):
+    _ride(db, date(2026, 10, 25), best20=199.5)
+    _ride(db, date(2026, 9, 10), best20=190)
+    thresholds.set_threshold(db, kind="ftp_w", value=190, effective_from="2026-10-01")
+    thresholds.set_threshold(db, kind="ftp_w", value=250, effective_from="2099-01-01")  # future: ignored
+    power = build_context(db, TODAY)["power"]
+    assert (power["ftp"], power["ftp_source"]) == (190, "manual")
+    assert power["wkg"] == round(190 / 82.0, 2)
+    assert "set manually" in _render(build_context(db, TODAY))
+
+
+def test_manual_ftp_shows_without_a_power_curve(db):
+    thresholds.set_threshold(db, kind="ftp_w", value=190, effective_from="2026-10-01")
+    power = build_context(db, TODAY)["power"]
+    assert (power["ftp"], power["ftp_source"], power["curve"]) == (190, "manual", [])
 
 
 def test_power_falls_back_to_summary_20min(db):

@@ -115,7 +115,7 @@ SAMPLE: dict = {
         "DDRDXRD", "DDRMRRD", "DDRDRRD", "DXRDRXD", "DDRDRRD", "DTMPPRP",
     ]),
     "power": {
-        "ftp": 238, "wkg": 2.96,
+        "ftp": 238, "ftp_source": "estimate", "wkg": 2.96,
         "curve": [
             {"dur": "5s", "now": 812, "prev": 790},
             {"dur": "1m", "now": 402, "prev": 395},

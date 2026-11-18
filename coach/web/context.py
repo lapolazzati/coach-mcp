@@ -15,6 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from coach.plan.month import SLOT_TIMES, SPORTS, _row_tss, canonical_sport
+from coach.store import thresholds
 from coach.store.db import Row, fetch_all, fetch_one
 from coach.web import course
 from coach.web.charts import fmt_hm
@@ -324,12 +325,16 @@ def _power(db: sqlite3.Connection, today: date, weight_kg: float) -> dict | None
         prev = _best_watts(db, secs, prev_from, prev_to)
         if now is not None and prev is not None:
             curve.append({"dur": label, "now": round(now), "prev": round(prev)})
-    best20 = _best_watts(db, 1200, now_from, today)
-    if best20 is None or not curve:
-        return None
-    # FTP estimated as 95% of the best 20 minutes until intervals.icu supplies one.
-    ftp = round(best20 * 0.95)
-    return {"ftp": ftp, "wkg": round(ftp / weight_kg, 2), "curve": curve}
+    manual = thresholds.effective(db, today).get("ftp_w")
+    if manual:
+        ftp, source = round(manual["value"]), "manual"
+    else:
+        best20 = _best_watts(db, 1200, now_from, today)
+        if best20 is None or not curve:
+            return None
+        # no FTP set (set_athlete_settings): estimate it as 95% of the best 20 minutes
+        ftp, source = round(best20 * 0.95), "estimate"
+    return {"ftp": ftp, "ftp_source": source, "wkg": round(ftp / weight_kg, 2), "curve": curve}
 
 
 def _rides(db: sqlite3.Connection, today: date) -> list[dict]:
